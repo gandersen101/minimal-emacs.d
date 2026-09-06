@@ -1,5 +1,5 @@
 ;; enable ui elements
-(setq minimal-emacs-ui-features '(context-menu tool-bar menu-bar dialogs tooltips))
+;; (setq minimal-emacs-ui-features '(context-menu tool-bar menu-bar dialogs tooltips))
 
 ;;; Reducing clutter in ~/.emacs.d by redirecting files to ~/.emacs.d/var/
 ;; NOTE: This must be placed in 'pre-early-init.el'.
