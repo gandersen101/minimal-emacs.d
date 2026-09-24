@@ -508,3 +508,16 @@
              markdown-toc--toc-already-present-p)
   :init
   (setq markdown-toc-header-toc-title "**Table of Contents**"))
+
+;; ESS provides R editing and interactive R-session support.
+;; The wrapper makes `M-x R' use a uvr project environment when the session
+;; starts in a project, or uvr's active global R otherwise.
+(defconst my/uvr-r-program
+  (expand-file-name "scripts/uvr-r" minimal-emacs-user-directory)
+  "Wrapper that starts R through uvr for ESS.")
+
+(use-package ess-r-mode
+  :ensure ess
+  :init
+  (setq inferior-ess-r-program my/uvr-r-program)
+  :mode ("\\.[Rr]\\'" . ess-r-mode))

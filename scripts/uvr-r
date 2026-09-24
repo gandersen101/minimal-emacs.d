@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Start the uvr-selected R, forwarding ESS's R options after `--`.
+exec uvr run -- "$@"
