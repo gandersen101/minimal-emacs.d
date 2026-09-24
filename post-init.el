@@ -587,3 +587,129 @@
                          (yaml . (yaml-mode . yaml-ts-mode))))
     (when (treesit-language-available-p (car mode-remap))
       (add-to-list 'major-mode-remap-alist (cdr mode-remap)))))
+
+;; Kirigami: a unified interface for code folding
+
+(use-package kirigami
+  :commands (kirigami-open-fold
+             kirigami-open-fold-rec
+             kirigami-close-fold
+             kirigami-toggle-fold
+             kirigami-open-folds
+             kirigami-close-folds-except-current
+             kirigami-close-folds)
+
+  :bind
+  (("C-c z o" . kirigami-open-fold)      ; Open fold at point
+   ("C-c z O" . kirigami-open-fold-rec)  ; Open fold recursively
+   ("C-c z r" . kirigami-open-folds)     ; Open all folds
+   ("C-c z c" . kirigami-close-fold)     ; Close fold at point
+   ("C-c z m" . kirigami-close-folds)    ; Close all folds
+   ("C-c z a" . kirigami-toggle-fold))   ; Toggle fold at point
+
+  :init
+  (kirigami-global-mode 1))
+
+;; The built-in outline-minor-mode provides structured code folding in modes
+;; such as Emacs Lisp and Python, allowing users to collapse and expand sections
+;; based on headings or indentation levels. This feature enhances navigation and
+;; improves the management of large files with hierarchical structures.
+(use-package outline
+  :ensure nil
+  :commands outline-minor-mode
+  :hook
+  (;; Use " ▼" instead of the default ellipsis "..." for folded text to make
+   ;; folds more visually distinctive and readable.
+   (outline-minor-mode
+    .
+    (lambda()
+      (let* ((display-table (or buffer-display-table (make-display-table)))
+             (face-offset (* (face-id 'shadow) (ash 1 22)))
+             (value (vconcat (mapcar (lambda (c) (+ face-offset c)) " ▼"))))
+        (set-display-table-slot display-table 'selective-display value)
+        (setq buffer-display-table display-table))))))
+
+;; Enable the mode
+(add-hook 'emacs-lisp-mode-hook #'outline-minor-mode)
+(add-hook 'conf-mode-hook #'outline-minor-mode)
+(add-hook 'markdown-mode-hook #'outline-minor-mode)
+(add-hook 'diff-mode-hook #'outline-minor-mode)
+
+;; hs-minor-mode - ideal for C-style languages and others that use braces, `{}`
+(add-hook 'c-mode-hook #'hs-minor-mode)
+
+(defun my/css-mode-enable-hideshow ()
+  "Enable hideshow in traditional CSS buffers only."
+  (unless (derived-mode-p 'css-ts-mode)
+    (hs-minor-mode)))
+
+(add-hook 'css-mode-hook #'my/css-mode-enable-hideshow)
+
+(add-hook 'ess-r-mode-hook #'hs-minor-mode)
+
+(defun my/html-mode-enable-hideshow ()
+  "Enable hideshow in traditional HTML buffers only."
+  (unless (derived-mode-p 'html-ts-mode)
+    (hs-minor-mode)))
+
+(add-hook 'html-mode-hook #'my/html-mode-enable-hideshow)
+
+(add-hook 'js-mode-hook #'hs-minor-mode)
+(add-hook 'lua-mode-hook #'hs-minor-mode)
+(add-hook 'sh-mode-hook #'hs-minor-mode)
+
+;; The outline-indent Emacs package provides a minor mode that enables code
+;; folding based on indentation levels.
+;; In addition to code folding, outline-indent allows:
+;; - Moving indented blocks up and down
+;; - Indenting/unindenting to adjust indentation levels
+;; - Inserting a new line with the same indentation level as the current line
+;; - Move backward/forward to the indentation level of the current line
+;; - and other features.
+(use-package outline-indent
+  :commands outline-indent-minor-mode
+  :init
+  (setq outline-indent-ellipsis " ▼"))
+
+(add-hook 'python-mode-hook #'outline-indent-minor-mode)
+(add-hook 'yaml-mode-hook #'outline-indent-minor-mode)
+(add-hook 'yaml-ts-mode-hook #'outline-indent-minor-mode)
+
+;; Intelligent code folding by using the structural understanding of the
+;; built-in tree-sitter parser. Unlike traditional folding methods that rely on
+;; regular expressions or indentation, treesit-fold uses the actual syntax tree
+;; of the code to accurately identify foldable regions such as functions,
+;; classes, comments, and documentation strings. This allows for faster and more
+;; precise folding behavior that respects the grammar of the programming
+;; language, ensuring that fold boundaries are always syntactically correct even
+;; in complex or nested code structures.
+(use-package treesit-fold
+  :commands (treesit-fold-close
+             treesit-fold-close-all
+             treesit-fold-open
+             treesit-fold-toggle
+             treesit-fold-open-all
+             treesit-fold-mode
+             global-treesit-fold-mode
+             treesit-fold-open-recursively
+             treesit-fold-line-comment-mode)
+
+  :init
+  (setq treesit-fold-line-count-show t)
+  (setq treesit-fold-line-count-format " ▼")
+
+  :config
+  (set-face-attribute 'treesit-fold-replacement-face nil
+                      :foreground "#808080"
+                      :box nil
+                      :weight 'bold))
+
+;; Tree-sitter major modes use syntax-tree-aware folding; their traditional
+;; counterparts retain the mode-specific folding configured above.
+(add-hook 'bash-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'c-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'css-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'html-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'json-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'python-ts-mode-hook #'treesit-fold-mode)
+(add-hook 'toml-ts-mode-hook #'treesit-fold-mode)
