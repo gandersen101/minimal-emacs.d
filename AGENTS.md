@@ -39,14 +39,9 @@ graphical Emacs as one cohesive working environment. Keep commands, editing
 behavior, completion, navigation, undo/redo, clipboard integration, and session
 workflows as closely mirrored as each interface permits.
 
-- The owner normally runs terminal Emacs inside tmux, in WezTerm. Treat that
-  combination as the primary terminal environment when testing or configuring
-  terminal behavior. Test a standalone WezTerm Emacs session when a feature
-  needs to distinguish tmux behavior, especially terminal-image protocols.
-- WezTerm does not reliably clip Kitty or Sixel images between Emacs windows,
-  even outside tmux. Keep terminal EWW Markdown previews text-only for images;
-  retain normal image rendering in graphical Emacs.
-- Share configuration and keybindings across both interfaces. Limit conditional
+- The owner will normally run GUI emacs. Treat that emacs environment when
+  testing or behavior.
+- Share configuration and keybindings across interfaces. Limit conditional
   setup to capabilities that actually differ.
 - Ensure important commands have terminal-compatible bindings. Do not rely solely
   on GUI modifiers, shifted control keys, mouse actions, or key combinations the

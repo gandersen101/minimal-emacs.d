@@ -1,8 +1,19 @@
+;;; post-init.el --- Personal setup -*- no-byte-compile: t; lexical-binding: t; -*-
+
+;; Hide a minor mode's mode-line indicator while leaving the mode enabled
+(defun my/hide-mode-line-lighter (mode)
+  "Hide MODE's lighter without disabling the mode itself."
+  (let ((entry (assq mode minor-mode-alist)))
+    (when entry
+      ;; An empty lighter preserves the conditional mode-line construct.
+      ;; Removing its cdr altogether makes Emacs render `*invalid*'.
+      (setcdr entry '("")))))
+
 ;; Native compilation enhances Emacs performance by converting Elisp code into
 ;; native machine code, resulting in faster execution and improved
 ;; responsiveness.
 ;;
-;; Ensure adding the following compile-angel code at the very beginning
+;; Ensure adding the following compile-angel code near the very beginning
 ;; of your `~/.emacs.d/post-init.el` file, before all other packages.
 (use-package compile-angel
   :demand t
@@ -35,7 +46,37 @@
   ;; A global mode that compiles .el files prior to loading them via `load' or
   ;; `require'. Additionally, it compiles all packages that were loaded before
   ;; the mode `compile-angel-on-load-mode' was activated.
-  (compile-angel-on-load-mode 1))
+  (compile-angel-on-load-mode 1)
+
+  ;; Its on-load state is steady and does not need permanent mode-line space.
+  (my/hide-mode-line-lighter 'compile-angel-on-load-mode))
+
+;; Use MesloLGL Nerd Font Mono at 15 pt for graphical frames. Terminal Emacs
+;; continues to use the font selected by the terminal emulator.
+(defun my/set-gui-default-font (frame)
+  "Set the default font for graphical FRAME."
+  (when (display-graphic-p frame)
+    (set-face-attribute 'default frame
+                        :family "MesloLGL Nerd Font Mono"
+                        :height 150)))
+
+(add-hook 'after-make-frame-functions #'my/set-gui-default-font)
+(my/set-gui-default-font (selected-frame))
+
+;; Environment variable synchronization (macOS)
+(use-package exec-path-from-shell
+  :if (and (or (display-graphic-p) (daemonp))
+           (eq system-type 'darwin)) ; macOS only
+  :demand t
+  :functions exec-path-from-shell-initialize
+  :config
+  (dolist (var '("TMPDIR"
+                 "SSH_AUTH_SOCK"
+                 "EDITOR" "VISUAL"
+                 "LANG" "LC_CTYPE"))
+    (add-to-list 'exec-path-from-shell-variables var))
+  ;; Initialization also imports PATH and updates `exec-path'.
+  (exec-path-from-shell-initialize))
 
 ;; Keep terminal and graphical Emacs in sync with the macOS clipboard.
 ;; GUI frames retain Emacs's native clipboard integration; terminal frames
@@ -68,37 +109,6 @@
       interprogram-cut-function #'my/interprogram-cut-to-macos
       interprogram-paste-function #'my/interprogram-paste-from-macos
       save-interprogram-paste-before-kill t)
-
-;; Let WezTerm supply the default terminal background so standalone terminal
-;; Emacs has the same transparency as a tmux pane.  Keep GUI face backgrounds
-;; under Emacs's normal control.
-(defun my/terminal-use-default-background (frame)
-  "Use the terminal's default background in non-graphical FRAME."
-  (unless (display-graphic-p frame)
-    (set-face-attribute 'default frame :background nil)))
-
-(add-hook 'after-make-frame-functions #'my/terminal-use-default-background)
-(my/terminal-use-default-background (selected-frame))
-
-;; EnvVar Sync
-(use-package exec-path-from-shell
-  :if (and (or (display-graphic-p) (daemonp))
-           (eq system-type 'darwin)) ; macOS only
-  :demand t
-  :functions exec-path-from-shell-initialize
-  :config
-  (dolist (var '("TMPDIR"
-                 "SSH_AUTH_SOCK" "SSH_AGENT_PID"
-                 "GPG_AGENT_INFO"
-                 ;; "FZF_DEFAULT_COMMAND" "FZF_DEFAULT_OPTS" ; fzf
-                 ;; "VIRTUAL_ENV" ; Python
-                 ;; "GOPATH" "GOROOT" "GOBIN" ; Go
-                 ;; "CARGO_HOME" "RUSTUP_HOME" ; Rust
-                 ;; "NVM_DIR" "NODE_PATH" ; Node/JS
-                 "LANG" "LC_CTYPE"))
-    (add-to-list 'exec-path-from-shell-variables var))
-  ;; Initialize
-  (exec-path-from-shell-initialize))
 
 ;; Auto-revert in Emacs is a feature that automatically updates the
 ;; contents of a buffer to reflect changes made to the underlying file
@@ -180,7 +190,7 @@
 (setq auto-save-visited-interval 5)
 (auto-save-visited-mode 1)
 
-;; Soft Wrapping (Visual Line Mode)
+;; Soft wrapping (Visual Line Mode)
 ;; Wrap prose at the window edge without changing the underlying buffer text.
 ;; Programming and utility buffers retain the upstream truncated-line default.
 (add-hook 'text-mode-hook #'visual-line-mode)
@@ -369,20 +379,16 @@
   (setq easysession-switch-to-exclude-current nil)
 
   ;; Display the active session name in the mode-line lighter.
+  ;; Keep the useful session name but omit the package's static label.
+  (setq easysession-save-mode-lighter "")
   (setq easysession-save-mode-lighter-show-session-name t)
-
-  ;; Restore buffers and layouts without resizing/repositioning frames at startup.
-  (setq easysession-setup-load-session-including-geometry nil)
-
-  ;; Handle GUI-to-terminal session restoration when using an Emacs daemon.
-  (setq easysession-frameset-restore-force-current-display (daemonp))
-
 
   ;; Optionally, the session name can be shown in the modeline info area:
   ;; (setq easysession-mode-line-misc-info t)
   ;; non-nil: Make `easysession-setup' load the session automatically.
   ;; (nil: session is not loaded automatically; the user can load it manually.)
   (setq easysession-setup-load-session t)
+
   ;; The `easysession-setup' function adds hooks:
   ;; - To enable automatic session loading during `emacs-startup-hook', or
   ;;   `server-after-make-frame-hook' when running in daemon mode.
