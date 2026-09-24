@@ -434,85 +434,46 @@
                       "-e" "autolink" "-e" "tagfilter"
                       "-e" "tasklist" "-e" "footnotes"
                       "--strikethrough-double-tilde"))
-  ;; C-c C-c l: preview in Emacs, refreshing on save, in either GUI or terminal.
-  ;; C-c C-c p: preview in the configured external browser.
-  ;; Keep source and preview side by side, matching the usual Markdown workflow.
+  ;; Fontify fenced blocks in the editing buffer using the declared language.
+  (markdown-fontify-code-blocks-natively t)
+  ;; Obsidian uses [[note]] and [[note|display text]].  Markdown Mode supports
+  ;; this syntax directly when the alias is the second component.
+  (markdown-enable-wiki-links t)
+  (markdown-wiki-link-alias-first nil)
+  ;; Obsidian's ==highlighted text== syntax is useful in note buffers.
+  (markdown-enable-highlighting-syntax t)
+  ;; Keep source and live preview side by side.
   (markdown-split-window-direction 'right)
-  (markdown-live-preview-window-function #'my/markdown-live-preview-window-eww)
   :bind
   (:map markdown-mode-map
-        ("C-c C-e" . markdown-do))
-  :config
-  (defun my/markdown-live-preview-window-eww (file)
-    "Preview FILE with EWW, avoiding terminal image-layer artifacts.
-Graphical Emacs renders images normally. In a terminal, EWW shows image alt
-text because WezTerm does not reliably clip Kitty or Sixel images between
-Emacs windows, with or without tmux."
-    (if (display-graphic-p)
-        (markdown-live-preview-window-eww file)
-      (let ((shr-inhibit-images t))
-        (markdown-live-preview-window-eww file)))))
+        ("C-c C-e" . markdown-do)))
 
-;; Terminal graphics protocols paint into terminal-wide coordinates rather than
-;; an individual Emacs window.  In WezTerm, both Kitty placements and Sixel can
-;; therefore survive a split change and overwrite an unrelated pane.  Inhibit
-;; images while SHR renders EWW HTML whenever the shared buffer is visible in a
-;; terminal frame.  GUI-only EWW buffers continue to use native Emacs images.
+;; EWW is markdown-mode's built-in live-preview viewer. Its default renderer
+;; preserves code text but does not use the language class emitted by cmark-gfm.
+;; `shr-tag-pre-highlight' uses that class (for example, language-elisp) to
+;; apply the corresponding Emacs major mode's font-lock faces.
+(use-package shr-tag-pre-highlight
+  :ensure t
+  :commands shr-tag-pre-highlight)
+
 (use-package eww
   :ensure nil
-  :commands eww
-  :config
-  (defun my/eww-buffer-visible-in-terminal-p ()
-    "Return non-nil when the current buffer is visible in a terminal frame.
-When the buffer is not visible, use the selected frame as the render target."
-    (let ((windows (get-buffer-window-list (current-buffer) nil 'visible)))
-      (if windows
-          (catch 'terminal
-            (dolist (window windows)
-              (unless (display-graphic-p (window-frame window))
-                (throw 'terminal t)))
-            nil)
-        (not (display-graphic-p)))))
+  :commands (eww eww-open-file)
+  :init
+  (defun my/markdown-live-preview-window-eww (file)
+    "Preview FILE in an EWW buffer dedicated to Markdown live previews."
+    (let ((buffer (or (and (buffer-live-p markdown-live-preview-buffer)
+                           markdown-live-preview-buffer)
+                      (generate-new-buffer "*markdown-preview*"))))
+      (with-current-buffer buffer
+        (unless (derived-mode-p 'eww-mode)
+          (eww-mode))
+        (my/eww-setup-code-blocks)
+        (eww-open-file file))
+      buffer))
 
-  (defun my/eww-display-html-with-safe-images (function &rest args)
-    "Call FUNCTION with ARGS, suppressing unsafe terminal EWW images."
-    (let ((shr-inhibit-images
-           (or shr-inhibit-images
-               (my/eww-buffer-visible-in-terminal-p))))
-      (apply function args)))
-
-  (advice-add 'eww-display-html :around
-              #'my/eww-display-html-with-safe-images))
-
-;; Inline images in WezTerm and other supported terminals; GUI rendering stays native.
-(use-package kitty-graphics
-  ;; Not in the configured package archives; use package.el's VC support.
-  :vc (:url "https://github.com/cashmeredev/kitty-graphics.el" :rev :newest)
-  :commands kitty-graphics-doctor
-  ;; Setup handles ordinary terminal startup and later terminal client frames.
-  :hook (after-init . kitty-graphics-setup)
-  :custom
-  ;; Prefer Sixel for terminal image workflows that occupy a whole window.
-  ;; Neither Sixel nor Kitty placements are safely clipped to split EWW
-  ;; windows in WezTerm, so the EWW configuration above inhibits those images.
-  (kitty-graphics-preferred-protocol 'sixel)
-  (kitty-graphics-sixel-encoder-program "magick")
-  (kitty-graphics-shr-scale 'fit)
-  (kitty-graphics-shr-fit-width 0.9)
-  (kitty-graphics-shr-fit-height 20)
-  :config
-  (defun my/kitty-graphics-window-body-boundary (args)
-    "Restrict image refresh in ARGS to the window body, excluding its mode line."
-    (let ((window (nth 1 args)))
-      (list (car args) window
-            (min (nth 2 args) (nth 3 (window-body-edges window))))))
-
-  (advice-add 'kitty-graphics--refresh-overlay :filter-args
-              #'my/kitty-graphics-window-body-boundary))
-
-(use-package shr-tag-pre-highlight
-  :after eww
-  :demand t
+  (setq markdown-live-preview-window-function
+        #'my/markdown-live-preview-window-eww)
   :config
   (defface my/eww-code-block
     '((((class color) (background dark))
@@ -520,23 +481,24 @@ When the buffer is not visible, use the selected frame as the render target."
       (((class color) (background light))
        :inherit fixed-pitch :background "#f6f8fa" :extend t)
       (t :inherit fixed-pitch))
-    "Background for EWW code blocks, preserving syntax highlighting."
+    "Background used to distinguish code blocks in EWW."
     :group 'eww)
 
   (defun my/eww-render-code-block (dom)
-    "Render code in DOM with syntax colors and a block background."
+    "Render a PRE DOM element with syntax highlighting and a background."
     (shr-ensure-newline)
     (let ((start (point)))
       (shr-tag-pre-highlight dom)
       (add-face-text-property start (point) 'my/eww-code-block t)))
 
   (defun my/eww-setup-code-blocks ()
-    "Use highlighted code blocks in this EWW buffer."
+    "Enable rendered code blocks in the current EWW buffer."
     (setq-local shr-external-rendering-functions
                 (cons '(pre . my/eww-render-code-block)
-                      shr-external-rendering-functions)))
+                      (assq-delete-all
+                       'pre (copy-tree shr-external-rendering-functions)))))
 
-  (add-hook 'eww-mode-hook #'my/eww-setup-code-blocks))
+)
 
 ;; Automatically generate a table of contents when editing Markdown files
 (use-package markdown-toc
