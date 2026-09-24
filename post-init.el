@@ -521,3 +521,69 @@
   :init
   (setq inferior-ess-r-program my/uvr-r-program)
   :mode ("\\.[Rr]\\'" . ess-r-mode))
+
+;; Tree-sitter grammars and major-mode preferences
+;;
+;; Prefer Tree-sitter major modes when their grammars are available. The
+;; traditional modes remain the automatic fallback on other Emacs installations.
+(require 'treesit)
+
+;; Restrict the Bash grammar to files explicitly identified as Bash. In
+;; particular, retain `sh-mode' for /bin/sh and other shell dialects, even
+;; though the Bash grammar can parse much of their common syntax.
+(defun my/bash-mode-maybe ()
+  "Use `bash-ts-mode' when its grammar is available, otherwise `sh-mode'."
+  (if (and (treesit-available-p)
+           (treesit-language-available-p 'bash))
+      (bash-ts-mode)
+    (sh-mode)))
+
+(defun my/bash-shebang-p ()
+  "Return non-nil when the buffer's first line identifies Bash."
+  (save-excursion
+    (goto-char (point-min))
+    (looking-at-p "#!.*\\(?:/\\|[[:space:]]\\)bash\\(?:[[:space:]]\\|\\'\\)")))
+
+(defun my/shell-mode-maybe ()
+  "Use Bash Tree-sitter support only for a buffer with a Bash shebang."
+  (if (my/bash-shebang-p)
+      (my/bash-mode-maybe)
+    (sh-mode)))
+
+(add-to-list 'interpreter-mode-alist '("bash" . my/bash-mode-maybe))
+(add-to-list 'auto-mode-alist '("\\.sh\\'" . my/shell-mode-maybe))
+(dolist (pattern '("\\.bash\\'"
+                   "\\(?:/\\|\\`\\)\\.bash\\(?:rc\\|_profile\\|_login\\|_logout\\|_aliases\\)\\'"
+                   "/bash_completion\\(?:\\.sh\\)?\\'"))
+  (add-to-list 'auto-mode-alist (cons pattern #'my/bash-mode-maybe)))
+
+;; Emacs normally associates .html files with `mhtml-mode'. Prefer the
+;; simpler HTML mode here because this configuration targets plain HTML files.
+(defun my/html-mode-maybe ()
+  "Use `html-ts-mode' when its grammar is available, otherwise `html-mode'."
+  (if (and (treesit-available-p)
+           (treesit-language-available-p 'html))
+      (html-ts-mode)
+    (html-mode)))
+
+(add-to-list 'auto-mode-alist '("\\.html?\\'" . my/html-mode-maybe))
+
+(dolist (source '((python "https://github.com/tree-sitter/tree-sitter-python")
+                  (c "https://github.com/tree-sitter/tree-sitter-c")
+                  (bash "https://github.com/tree-sitter/tree-sitter-bash")
+                  (css "https://github.com/tree-sitter/tree-sitter-css")
+                  (html "https://github.com/tree-sitter/tree-sitter-html")
+                  (json "https://github.com/tree-sitter/tree-sitter-json")
+                  (toml "https://github.com/tree-sitter-grammars/tree-sitter-toml")
+                  (yaml "https://github.com/tree-sitter-grammars/tree-sitter-yaml")))
+  (add-to-list 'treesit-language-source-alist source))
+(when (treesit-available-p)
+  (dolist (mode-remap '((python . (python-mode . python-ts-mode))
+                         (c . (c-mode . c-ts-mode))
+                         (css . (css-mode . css-ts-mode))
+                         (html . (html-mode . html-ts-mode))
+                         (json . (js-json-mode . json-ts-mode))
+                         (toml . (conf-toml-mode . toml-ts-mode))
+                         (yaml . (yaml-mode . yaml-ts-mode))))
+    (when (treesit-language-available-p (car mode-remap))
+      (add-to-list 'major-mode-remap-alist (cdr mode-remap)))))
