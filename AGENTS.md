@@ -79,6 +79,12 @@ workflows as closely mirrored as each interface permits.
 
 ## Validation
 
+- `prek.toml` defines the tracked pre-commit checks. Run `prek run --all-files`
+  after relevant changes; Git commits run the same suite automatically. In
+  addition to whitespace and large-file checks, `scripts/check-elisp.el`
+  verifies balanced delimiters and canonical Emacs indentation for changed
+  `.el` files without loading the configuration or writing compiled output.
+  It requires an Emacs with `use-package-core` available on `PATH`.
 - For documentation-only changes, review the diff and run `git diff --check`.
   Confirm new files are not accidentally ignored.
 - For Lisp changes, check syntax with `check-parens` in `emacs-lisp-mode` and run

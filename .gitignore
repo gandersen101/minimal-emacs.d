@@ -5,8 +5,10 @@
 !early-init.el
 !init.el
 !post-init.el
+!prek.toml
 !scripts/
 scripts/*
 !scripts/uvr-r
+!scripts/check-elisp.el
 !.github/
 !.LICENSE
