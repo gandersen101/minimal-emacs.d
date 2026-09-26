@@ -498,7 +498,7 @@
                       (assq-delete-all
                        'pre (copy-tree shr-external-rendering-functions)))))
 
-)
+  )
 
 ;; Automatically generate a table of contents when editing Markdown files
 (use-package markdown-toc
@@ -579,12 +579,12 @@
   (add-to-list 'treesit-language-source-alist source))
 (when (treesit-available-p)
   (dolist (mode-remap '((python . (python-mode . python-ts-mode))
-                         (c . (c-mode . c-ts-mode))
-                         (css . (css-mode . css-ts-mode))
-                         (html . (html-mode . html-ts-mode))
-                         (json . (js-json-mode . json-ts-mode))
-                         (toml . (conf-toml-mode . toml-ts-mode))
-                         (yaml . (yaml-mode . yaml-ts-mode))))
+                        (c . (c-mode . c-ts-mode))
+                        (css . (css-mode . css-ts-mode))
+                        (html . (html-mode . html-ts-mode))
+                        (json . (js-json-mode . json-ts-mode))
+                        (toml . (conf-toml-mode . toml-ts-mode))
+                        (yaml . (yaml-mode . yaml-ts-mode))))
     (when (treesit-language-available-p (car mode-remap))
       (add-to-list 'major-mode-remap-alist (cdr mode-remap)))))
 
