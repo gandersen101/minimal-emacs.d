@@ -12,5 +12,7 @@
 scripts/*
 !scripts/uvr-r
 !scripts/check-elisp.el
+!bin/
+!bin/update-upstream-main
 !.github/
 !.LICENSE

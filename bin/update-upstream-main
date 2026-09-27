@@ -1,0 +1,98 @@
+#!/bin/sh
+# Merge the current upstream/main into this fork's main branch.
+
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "Refusing: run this from inside a Git worktree." >&2
+  exit 1
+}
+cd "$repo_root"
+
+if [ "$(git branch --show-current)" != "main" ]; then
+  echo "Refusing: switch to main before updating from upstream." >&2
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "Refusing: commit, stash, or discard local changes first." >&2
+  exit 1
+fi
+
+if ! git remote get-url upstream >/dev/null 2>&1; then
+  echo "Refusing: no upstream remote is configured." >&2
+  exit 1
+fi
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  echo "Refusing: an interactive terminal is required for review and approval." >&2
+  exit 1
+fi
+
+git fetch upstream --prune
+
+if ! git rev-parse --verify --quiet upstream/main^{commit} >/dev/null; then
+  echo "Refusing: upstream does not provide a main branch." >&2
+  exit 1
+fi
+
+if git merge-base --is-ancestor upstream/main HEAD; then
+  echo "main already includes upstream/main."
+  exit 0
+fi
+
+echo "Commits since the shared base (< main-only, > upstream-only):"
+git --no-pager log --left-right --cherry-pick --oneline HEAD...upstream/main
+echo
+echo "Upstream change summary:"
+git --no-pager diff --stat HEAD...upstream/main
+echo
+echo "Upstream patch (press q to leave the pager):"
+patch_file=$(mktemp "${TMPDIR:-/tmp}/update-upstream-main.XXXXXX")
+trap 'rm -f "$patch_file"' EXIT HUP INT TERM
+git --no-pager diff --no-color HEAD...upstream/main > "$patch_file"
+pager=$(git var GIT_PAGER)
+# A pager may include options, so its value is intentionally word-split here.
+# shellcheck disable=SC2086
+$pager "$patch_file"
+printf '\nMerge upstream/main into main? [y/N] '
+if ! read -r answer; then
+  echo "No changes made."
+  exit 0
+fi
+
+case "$answer" in
+  y|Y|yes|YES)
+    ;;
+  *)
+    echo "No changes made."
+    exit 0
+    ;;
+esac
+
+if ! git merge --no-ff --no-commit upstream/main; then
+  cat >&2 <<'EOF'
+Merge stopped, likely because of conflicts.
+
+Inspect the situation with: git status
+Resolve each conflicted file, then run:
+  git add <resolved-files>
+  prek run --all-files
+  git commit
+
+To abandon this merge instead, run: git merge --abort
+EOF
+  exit 1
+fi
+
+if ! prek run --all-files; then
+  cat >&2 <<'EOF'
+Validation failed; the merge remains in progress.
+
+Fix the reported issues, stage any changes, rerun `prek run --all-files`, and
+finish with `git commit`. To abandon this merge, run `git merge --abort`.
+EOF
+  exit 1
+fi
+
+git commit -m "Merge upstream/main"
