@@ -459,6 +459,8 @@
 (use-package eww
   :ensure nil
   :commands (eww eww-open-file)
+  :hook
+  (eww-mode . visual-line-mode)
   :init
   (defun my/markdown-live-preview-window-eww (file)
     "Preview FILE in an EWW buffer dedicated to Markdown live previews."
