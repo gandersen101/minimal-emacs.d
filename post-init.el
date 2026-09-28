@@ -786,3 +786,32 @@
   (setq diff-hl-flydiff-delay 0.4)  ; Faster optional flydiff updates
   (setq diff-hl-show-staged-changes nil)  ; Separate staged changes
   (setq diff-hl-update-async t))  ; Do not block Emacs
+
+;; Org mode is a major mode designed for organizing notes, planning, task
+;; management, and authoring documents using plain text with a simple and
+;; expressive markup syntax. It supports hierarchical outlines, TODO lists,
+;; scheduling, deadlines, time tracking, and exporting to multiple formats
+;; including HTML, LaTeX, PDF, and Markdown.
+(use-package org
+  :commands (org-mode org-version)
+  :mode
+  ("\\.org\\'" . org-mode)
+  :hook
+  (org-mode . visual-line-mode)
+  :init
+  (setq org-hide-leading-stars t)
+  (setq org-startup-indented t)
+  (setq org-adapt-indentation nil)
+  (setq org-edit-src-content-indentation 0)
+  (setq org-fontify-done-headline t)
+  (setq org-fontify-todo-headline t)
+  (setq org-fontify-whole-heading-line t)
+  (setq org-fontify-quote-and-verse-blocks t)
+  (setq org-startup-truncated nil))
+
+;; org-appear temporarily reveals normally hidden elements
+;; (such as emphasis markers, links, or entities)
+;; when the cursor enters them, and hides them again when the cursor leaves
+(use-package org-appear
+  :commands org-appear-mode
+  :hook (org-mode . org-appear-mode))
