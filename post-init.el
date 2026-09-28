@@ -713,3 +713,35 @@
 (add-hook 'json-ts-mode-hook #'treesit-fold-mode)
 (add-hook 'python-ts-mode-hook #'treesit-fold-mode)
 (add-hook 'toml-ts-mode-hook #'treesit-fold-mode)
+
+;; dumb-jump provides context-aware 'go to definition' functionality
+;; for 50+ programming languages without requiring a language server
+(use-package dumb-jump
+  :commands dumb-jump-xref-activate
+  :init
+  ;; Register `dumb-jump' as an xref backend so it integrates with
+  ;; `xref-find-definitions'. A priority of 80 ensures it is used only when no
+  ;; more specific backend is available.
+  (with-eval-after-load 'xref
+    (add-hook 'xref-backend-functions #'dumb-jump-xref-activate 80))
+
+  (setq dumb-jump-aggressive nil)
+  ;; (setq dumb-jump-quiet t)
+
+  ;; Number of seconds a rg/grep/find command can take before being warned to
+  ;; use ag and config.
+  (setq dumb-jump-max-find-time 3)
+
+  ;; Use `completing-read' so that selection of jump targets integrates with the
+  ;; active completion framework (e.g., Vertico, Ivy, Helm, Icomplete),
+  ;; providing a consistent minibuffer-based interface whenever multiple
+  ;; definitions are found.
+  (setq dumb-jump-selector 'completing-read)
+
+  :config
+  ;; If ripgrep is available, force `dumb-jump' to use it because it is
+  ;; significantly faster and more accurate than the default searchers (grep,
+  ;; ag, etc.).
+  (when (executable-find "rg")
+    (setq dumb-jump-force-searcher 'rg)
+    (setq dumb-jump-prefer-searcher 'rg)))
