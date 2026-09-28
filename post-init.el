@@ -771,3 +771,18 @@
   ;; saved file, the cursor remains in the same position, ensuring a consistent
   ;; editing experience without affecting cursor placement.
   (setq stripspace-restore-column t))
+
+;; diff-hl highlights uncommitted changes in the window margin,
+;; enabling navigation between them
+(use-package diff-hl
+  :commands (diff-hl-mode
+             global-diff-hl-mode)
+  :hook (emacs-startup . global-diff-hl-mode)
+  :init
+  ;; Start globally after initialization so restored and subsequently opened
+  ;; buffers both participate.  Git supplies no line markers for binary or
+  ;; untracked files.
+  (setq diff-hl-global-modes '(not pdf-view-mode image-mode))
+  (setq diff-hl-flydiff-delay 0.4)  ; Faster optional flydiff updates
+  (setq diff-hl-show-staged-changes nil)  ; Separate staged changes
+  (setq diff-hl-update-async t))  ; Do not block Emacs
