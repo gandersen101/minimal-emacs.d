@@ -817,3 +817,32 @@
 (use-package org-appear
   :commands org-appear-mode
   :hook (org-mode . org-appear-mode))
+
+;; Resolve the venv, Ruff, and Mypy for each Python file from the venvs above
+;; it.  Project-specific lint, format, and type-check policy belongs in
+;; pyproject.toml.  See lisp/my-python-env/README.md.
+;;
+;; Each personal package lives in its own directory under lisp/.
+(let ((lisp-dir (expand-file-name "lisp" minimal-emacs-user-directory)))
+  (when (file-directory-p lisp-dir)
+    (dolist (dir (directory-files lisp-dir t "\\`[^.]"))
+      (when (file-directory-p dir)
+        (add-to-list 'load-path dir)))))
+
+(use-package my-python-env
+  :ensure nil
+  :commands (my/python-eglot-ensure
+             my/python-env-reload
+             my/python-env-describe)
+  :hook ((python-mode . my/python-eglot-ensure)
+         (python-ts-mode . my/python-eglot-ensure)))
+
+;; Set up the Language Server Protocol (LSP) servers using Eglot.
+(use-package eglot
+  :ensure nil
+  :commands (eglot-ensure
+             eglot-rename
+             eglot-format-buffer)
+  :config
+  (require 'my-python-env)
+  (my/python-env-setup))

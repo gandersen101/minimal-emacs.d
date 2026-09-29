@@ -12,6 +12,12 @@
 scripts/*
 !scripts/uvr-r
 !scripts/check-elisp.el
+!lisp/
+lisp/*
+!lisp/*/
+lisp/*/*
+!lisp/*/*.el
+!lisp/*/README.md
 !bin/
 !bin/update-upstream-main
 !.github/
