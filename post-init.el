@@ -110,6 +110,28 @@
       interprogram-paste-function #'my/interprogram-paste-from-macos
       save-interprogram-paste-before-kill t)
 
+;; tmux sends shifted punctuation keys with modifyOtherKeys but without the
+;; Shift modifier. For example, C-M-# arrives as "\e[27;7;35~", but xterm.el
+;; decodes only the xterm form with Shift, "\e[27;8;35~". Copy each decoding
+;; with Shift to the form without Shift, unless that form is already defined.
+;; `input-decode-map' is local to each terminal, so run this for each xterm-like
+;; terminal (tmux included) that Emacs initializes.
+;; The key table in xterm.el is internal to Emacs, and a future Emacs version
+;; can change it. Then this function adds nothing, and keys such as C-M-# can
+;; insert extra characters such as "~" again in tmux.
+(defun my/xterm-decode-keys-without-shift ()
+  "Decode modifyOtherKeys sequences that omit Shift for shifted keys."
+  (dolist (modifiers '((6 . 5) (8 . 7)))   ; C-S -> C, C-M-S -> C-M
+    (dolist (char (number-sequence 33 126))
+      (let ((key (lookup-key input-decode-map
+                             (format "\e[27;%d;%d~" (car modifiers) char)))
+            (seq (format "\e[27;%d;%d~" (cdr modifiers) char)))
+        (when (and (vectorp key)
+                   (not (vectorp (lookup-key input-decode-map seq))))
+          (define-key input-decode-map seq key))))))
+
+(add-hook 'terminal-init-xterm-hook #'my/xterm-decode-keys-without-shift)
+
 ;; Auto-revert in Emacs is a feature that automatically updates the
 ;; contents of a buffer to reflect changes made to the underlying file
 ;; on disk.
