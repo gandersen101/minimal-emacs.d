@@ -360,15 +360,18 @@
 
 ;; The undo-fu package is a lightweight wrapper around Emacs' built-in undo
 ;; system, providing more convenient undo/redo functionality.
-;; A terminal sends the same byte for C-z and C-S-z, so terminal Emacs cannot
-;; tell them apart, C-S-z therefore works only in GUI frames.
-;; M-_ is the redo key for every interface.
+;; C-M-_ is the redo key for every interface. C-? also works in GUI Emacs and
+;; in tmux, where `my/xterm-decode-keys-without-shift' decodes it. Both keys
+;; replace the built-in `undo-redo' bindings, so every redo key runs the same
+;; command. `undo-fu-only-redo' uses a copy of `undo-redo', so it also redoes
+;; after the built-in `undo' on C-/, C-_, and C-x u. A terminal sends the same
+;; byte for C-z and C-S-z, so C-S-z cannot be the redo key.
 (use-package undo-fu
   :commands (undo-fu-only-redo-all
              undo-fu-disable-checkpoint)
   :bind (("C-z" . undo-fu-only-undo)
-         ("C-S-z" . undo-fu-only-redo)
-         ("M-_" . undo-fu-only-redo)))
+         ("C-M-_" . undo-fu-only-redo)
+         ("C-?" . undo-fu-only-redo)))
 
 ;; The undo-fu-session package complements undo-fu by enabling the saving
 ;; and restoration of undo history across Emacs sessions, even after restarting.
