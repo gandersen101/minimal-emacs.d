@@ -39,8 +39,13 @@ graphical Emacs as one cohesive working environment. Keep commands, editing
 behavior, completion, navigation, undo/redo, clipboard integration, and session
 workflows as closely mirrored as each interface permits.
 
-- The owner will normally run GUI emacs. Treat that emacs environment when
-  testing or behavior.
+- The owner normally runs terminal Emacs inside tmux. Treat that environment as
+  the primary target for design, testing, and troubleshooting. Standalone
+  terminal Emacs and GUI Emacs remain fully supported; do not regress them.
+- tmux sits between the terminal and Emacs. It can intercept or change keys,
+  mouse events, colors, and clipboard escape sequences. Read `~/.tmux.conf`
+  before you change behavior that crosses that boundary. For example, the tmux
+  prefix is `C-a`, so Emacs receives `C-a` only after the owner presses it twice.
 - Share configuration and keybindings across interfaces. Limit conditional
   setup to capabilities that actually differ.
 - Ensure important commands have terminal-compatible bindings. Do not rely solely
@@ -90,10 +95,11 @@ workflows as closely mirrored as each interface permits.
 - For Lisp changes, check syntax with `check-parens` in `emacs-lisp-mode` and run
   focused checks for the affected behavior. Avoid creating compiled init files
   in this live configuration directory merely to validate syntax.
-- Test relevant interactive behavior in both `emacs -nw --debug-init` and a
-  graphical Emacs started with `--debug-init`, using this configuration and the
-  intended Emacs executable. Test later-created frames and GUI/terminal clients
-  when changing frame-dependent or daemon behavior.
+- Test relevant interactive behavior first with `emacs -nw --debug-init` inside
+  tmux. Then test standalone `emacs -nw --debug-init` and a graphical Emacs
+  started with `--debug-init`. Use this configuration and the intended Emacs
+  executable. Test later-created frames and GUI/terminal clients when changing
+  frame-dependent or daemon behavior.
 - Batch mode and `emacs -Q` do not exercise normal interactive startup. Use an
   isolated configuration/runtime directory for tests that might install packages,
   restore sessions, or overwrite saved state.
