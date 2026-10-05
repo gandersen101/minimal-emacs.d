@@ -620,6 +620,11 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (:map markdown-mode-map
         ("C-c C-e" . markdown-do)))
 
+;; `edit-indirect' lets `markdown-mode' edit a fenced code block in its own
+;; buffer, using the major mode of the declared language (C-c ').
+(use-package edit-indirect
+  :commands (edit-indirect-region))
+
 ;; EWW is markdown-mode's built-in live-preview viewer. Its default renderer
 ;; preserves code text but does not use the language class emitted by cmark-gfm.
 ;; `shr-tag-pre-highlight' uses that class (for example, language-elisp) to
