@@ -12,6 +12,7 @@
 scripts/*
 !scripts/uvr-r
 !scripts/check-elisp.el
+!scripts/reopen-emacs-frame
 !lisp/
 lisp/*
 !lisp/*/

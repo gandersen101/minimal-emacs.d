@@ -104,6 +104,50 @@
   ;; Defer starting the server until after Emacs has finished initializing
   (add-hook 'emacs-startup-hook #'my/server-start))
 
+;; Restart Emacs to load configuration changes. Keep this near the top of the
+;; file, so that the command exists even when a later form fails.
+(defun my/check-config-syntax ()
+  "Signal an error when a personal configuration file has unbalanced parentheses."
+  (let ((lisp-dir (expand-file-name "lisp" minimal-emacs-user-directory)))
+    (dolist (file (append
+                   (directory-files minimal-emacs-user-directory t
+                                    "\\`\\(?:pre\\|post\\)-.*\\.el\\'")
+                   (and (file-directory-p lisp-dir)
+                        (directory-files-recursively lisp-dir "\\.el\\'"))))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (with-syntax-table emacs-lisp-mode-syntax-table
+          (condition-case err
+              (check-parens)
+            (user-error
+             (user-error "%s:%d: %s" (abbreviate-file-name file)
+                         (line-number-at-pos) (error-message-string err)))))))))
+
+;; `restart-emacs' asks to save modified buffers, and easysession saves the
+;; session when Emacs exits. Emacs then starts again in the same process with
+;; the same arguments, so launchd continues to manage the daemon. A daemon has
+;; no frame after the restart, so scripts/reopen-emacs-frame opens one. The
+;; script runs in a background subshell, so it continues after the restart.
+(defun my/restart-emacs ()
+  "Restart Emacs to load configuration changes.
+In a daemon, open a GUI frame when the restarted daemon is ready."
+  (interactive)
+  (my/check-config-syntax)
+  (when (y-or-n-p "Restart Emacs? ")
+    (when (daemonp)
+      (let ((client (or (executable-find "emacsclient")
+                        (user-error "Cannot find emacsclient"))))
+        (call-process "/bin/sh" nil 0 nil "-c"
+                      "\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &"
+                      (expand-file-name "scripts/reopen-emacs-frame"
+                                        minimal-emacs-user-directory)
+                      client
+                      (expand-file-name server-name server-socket-dir)
+                      (number-to-string (float-time before-init-time)))))
+    (restart-emacs)))
+
+(global-set-key (kbd "C-c q r") #'my/restart-emacs)
+
 ;; Keep terminal and graphical Emacs in sync with the macOS clipboard.
 ;; GUI frames retain Emacs's native clipboard integration; terminal frames
 ;; use macOS's pbcopy and pbpaste commands.

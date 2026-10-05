@@ -1,0 +1,33 @@
+#!/bin/sh
+# Wait for a restarted Emacs daemon, then open a GUI frame in it.
+#
+# `my/restart-emacs' in post-init.el starts this script in the background
+# before it restarts the daemon. The restarted daemon keeps its process ID, so
+# the script waits for a server with a new start time. It does not connect to
+# the old daemon while that daemon shuts down. Then it opens a GUI frame and
+# shows *Warnings* if the new startup reported warnings.
+#
+# Usage: reopen-emacs-frame EMACSCLIENT SOCKET OLD-START-TIME
+
+set -u
+
+client=$1
+socket=$2
+old_start=$3
+
+# Wait for at most about one minute.
+i=0
+while [ "$i" -lt 300 ]; do
+  start=$("$client" -s "$socket" -a false -w 2 \
+            -e '(float-time before-init-time)' 2>/dev/null) || start=
+  if [ -n "$start" ] && [ "$start" != "$old_start" ]; then
+    "$client" -s "$socket" -c -n
+    exec "$client" -s "$socket" -n -e \
+      '(let ((buffer (get-buffer "*Warnings*")))
+         (when (and buffer (> (buffer-size buffer) 0))
+           (display-buffer buffer)))'
+  fi
+  sleep 0.2
+  i=$((i + 1))
+done
+exit 1

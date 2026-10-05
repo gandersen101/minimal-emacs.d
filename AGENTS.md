@@ -41,6 +41,10 @@ environment as the primary target for design, testing, and troubleshooting.
   client asks for one. `bin/install-emacs-daemon` installs the agent, and
   `bin/install-emacs-daemon --uninstall` removes it. The daemon writes its
   output to `~/Library/Logs/emacs-daemon.log`.
+- The owner loads configuration changes with `C-c q r` (`my/restart-emacs`).
+  The command checks the parentheses in the personal files, restarts Emacs,
+  and then opens a GUI frame in the restarted daemon
+  (`scripts/reopen-emacs-frame`).
 - The owner opens GUI frames with `Emacs Client.app` or `emacsclient -c`.
   `~/.profile` sets `$EDITOR` to `emacsclient -c` in external terminals and
   to `emacsclient` in Emacs terminals such as vterm. A standalone Emacs starts
