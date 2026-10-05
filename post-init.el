@@ -440,6 +440,76 @@
   ;; (nil: session is not loaded automatically; the user can load it manually.)
   (setq easysession-setup-load-session t)
 
+  ;; Only GUI frames for normal work belong in the session. Edit frames, which
+  ;; a client such as $EDITOR opens for a commit message, and terminal frames do
+  ;; not load the session, and easysession does not save them. easysession
+  ;; skips a frame with a non-nil `easysession-dont-save' parameter.
+  (defun my/easysession-edit-client-p ()
+    "Return non-nil when the client of the selected frame waits for an edit."
+    (let ((client (frame-parameter nil 'client)))
+      (and (processp client)
+           (process-get client 'buffers))))
+
+  ;; Load the session automatically only in a GUI frame that is not an edit
+  ;; frame. The server runs `server-after-make-frame-hook' before it shows the
+  ;; edit, so a restore there can open more frames. easysession saves only a
+  ;; loaded session, so the frames that skip the load cannot overwrite it.
+  (defun my/easysession-load-p ()
+    "Return non-nil when the selected frame should load the session."
+    (and (display-graphic-p)
+         (not (my/easysession-edit-client-p))))
+
+  (setq easysession-setup-load-predicate #'my/easysession-load-p)
+
+  ;; The server also runs this hook when it reuses an existing frame for an
+  ;; edit, for example from vterm. The `client' parameter of such a frame is
+  ;; not the waiting client, so the frame stays in the session.
+  (defun my/easysession-skip-edit-frame ()
+    "Exclude the selected frame from the session when it is an edit frame."
+    (when (my/easysession-edit-client-p)
+      (set-frame-parameter nil 'easysession-dont-save t)))
+
+  (add-hook 'server-after-make-frame-hook #'my/easysession-skip-edit-frame)
+
+  (defun my/easysession-gui-frame-p (frame)
+    "Return non-nil when FRAME is a GUI frame that belongs in the session."
+    (and (display-graphic-p frame)
+         (not (frame-parent frame))
+         (not (frame-parameter frame 'tooltip))
+         (not (frame-parameter frame 'easysession-dont-save))
+         (frame-visible-p frame)))
+
+  ;; A restore in a GUI frame turns each saved terminal frame into an extra GUI
+  ;; frame. So exclude terminal frames while a session GUI frame exists. Without
+  ;; one (after a manual load in a terminal frame), keep the terminal frames, or
+  ;; the saved layout is empty.
+  (defun my/easysession-skip-terminal-frames ()
+    "Exclude terminal frames from the session while a GUI frame exists."
+    (let ((gui-frame-p (and (seq-some #'my/easysession-gui-frame-p (frame-list))
+                            t)))
+      (dolist (frame (frame-list))
+        (unless (display-graphic-p frame)
+          (set-frame-parameter frame 'easysession-dont-save gui-frame-p)))))
+
+  (add-hook 'easysession-before-save-hook #'my/easysession-skip-terminal-frames)
+
+  ;; In a daemon, easysession saves and unloads the session when the last client
+  ;; frame closes, also when that frame is a terminal or edit frame. Save and
+  ;; unload at the last session GUI frame instead. Then a terminal or edit frame
+  ;; that stays open cannot replace the GUI layout, and the next GUI frame loads
+  ;; the session again.
+  (defun my/easysession-unload-at-last-gui-frame (frame)
+    "Save and unload the session when FRAME is the last session GUI frame."
+    (when (and (daemonp)
+               (my/easysession-gui-frame-p frame)
+               (not (seq-some (lambda (other)
+                                (and (not (eq other frame))
+                                     (my/easysession-gui-frame-p other)))
+                              (frame-list))))
+      (easysession-unload)))
+
+  (add-hook 'delete-frame-functions #'my/easysession-unload-at-last-gui-frame)
+
   ;; The `easysession-setup' function adds hooks:
   ;; - To enable automatic session loading during `emacs-startup-hook', or
   ;;   `server-after-make-frame-hook' when running in daemon mode.
