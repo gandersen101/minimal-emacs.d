@@ -1055,6 +1055,102 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
     ;; Suppress prompts for terminating active processes when closing vterm
     (setq-local confirm-kill-processes nil))
 
+  ;; vterm does not report mouse events to the program in the terminal. The
+  ;; wheel only scrolls the Emacs buffer, and a click only moves the Emacs
+  ;; cursor. A program such as tmux draws on the alternate screen, so the
+  ;; buffer has no scrollback and the wheel does nothing. For these programs,
+  ;; send the wheel, clicks, and drags as SGR mouse reports.
+  (defvar my/vterm-mouse-programs '("tmux")
+    "Foreground programs in a vterm buffer that read mouse reports.")
+
+  (defun my/vterm-mouse-program-p ()
+    "Return non-nil when a program that reads mouse reports runs in this buffer."
+    (let* ((proc (get-buffer-process (current-buffer)))
+           ;; An integer is the process group of the foreground program.
+           (pgrp (and proc (process-running-child-p proc))))
+      (and (integerp pgrp)
+           (member (alist-get 'comm (process-attributes pgrp))
+                   my/vterm-mouse-programs)
+           t)))
+
+  (defun my/vterm--mouse-col-row (posn window)
+    "Return the (COLUMN . ROW) of POSN in the text area of WINDOW, or nil.
+A position in another window, a fringe, a margin, or the mode line gives nil."
+    (and (eq (posn-window posn) window)
+         (null (posn-area posn))
+         (posn-col-row posn t)))
+
+  (defun my/vterm--send-mouse (code window col-row final)
+    "Send an SGR mouse report to the program in the vterm buffer of WINDOW.
+CODE is the button code. COL-ROW is the 0-based (COLUMN . ROW) in WINDOW.
+FINAL is ?M for a press or a motion, and ?m for a release."
+    (with-current-buffer (window-buffer window)
+      (vterm-send-string
+       (format "\e[<%d;%d;%d%c" code
+               (1+ (max 0 (min (car col-row) (1- (window-body-width window)))))
+               (1+ (max 0 (min (cdr col-row) (1- (window-body-height window)))))
+               final))))
+
+  (defun my/vterm--mouse-window (event)
+    "Return the window of EVENT when a mouse-aware program reads the mouse there.
+Return nil when the event is outside the text area of a live window."
+    (let* ((start (event-start event))
+           (window (posn-window start)))
+      (and (window-live-p window)
+           (my/vterm--mouse-col-row start window)
+           (with-current-buffer (window-buffer window)
+             (my/vterm-mouse-program-p))
+           window)))
+
+  (defun my/vterm-wheel (event)
+    "Send the wheel EVENT to a mouse-aware program, or scroll the buffer."
+    (interactive "e")
+    (if-let* ((window (my/vterm--mouse-window event)))
+        ;; SGR buttons 64 and 65 are the wheel up and wheel down.
+        (my/vterm--send-mouse
+         (if (eq (event-basic-type event) 'wheel-up) 64 65)
+         window (my/vterm--mouse-col-row (event-start event) window) ?M)
+      (mwheel-scroll event)))
+
+  (defun my/vterm-mouse-drag (event)
+    "Send a press, drag, and release of button 1 to a mouse-aware program.
+Without such a program, select text as `mouse-drag-region' does."
+    (interactive "e")
+    (if-let* ((window (my/vterm--mouse-window event)))
+        (let ((last (my/vterm--mouse-col-row (event-start event) window))
+              (ev nil))
+          (my/vterm--send-mouse 0 window last ?M)
+          ;; `track-mouse' makes Emacs report the motion while the button is down.
+          (track-mouse
+            (while (mouse-movement-p (setq ev (read-event)))
+              (let ((col-row (my/vterm--mouse-col-row (event-start ev) window)))
+                (when (and col-row (not (equal col-row last)))
+                  (setq last col-row)
+                  ;; SGR button code 32 marks a motion with button 1 down.
+                  (my/vterm--send-mouse 32 window col-row ?M)))))
+          ;; EV ends the drag. It is the release, or an event that is not a
+          ;; mouse event. Give the second kind back to the command loop.
+          (unless (mouse-event-p ev)
+            (push ev unread-command-events))
+          (my/vterm--send-mouse
+           0 window
+           (or (and (mouse-event-p ev)
+                    (my/vterm--mouse-col-row (event-end ev) window))
+               last)
+           ?m))
+      (mouse-drag-region event)))
+
+  :bind
+  (:map vterm-mode-map
+        ("<wheel-up>" . my/vterm-wheel)
+        ("<wheel-down>" . my/vterm-wheel)
+        ("<double-wheel-up>" . my/vterm-wheel)
+        ("<double-wheel-down>" . my/vterm-wheel)
+        ("<triple-wheel-up>" . my/vterm-wheel)
+        ("<triple-wheel-down>" . my/vterm-wheel)
+        ;; The double and triple press events use this binding too.
+        ("<down-mouse-1>" . my/vterm-mouse-drag))
+
   :init
   (add-hook 'vterm-mode-hook #'my-vterm--setup)
 
