@@ -117,6 +117,9 @@ environment as the primary target for design, testing, and troubleshooting.
 - Batch mode and `emacs -Q` do not exercise normal interactive startup. Use an
   isolated configuration/runtime directory for tests that might install packages,
   restore sessions, or overwrite saved state.
+- With `emacs -Q`, also pass `--init-directory` with a temporary directory.
+  `-Q` skips `pre-early-init.el`, so without that option Emacs writes its
+  native compilation cache to `eln-cache/` in this directory.
 - `.github/workflows/ci.yml` compiles the upstream init files on Emacs 29.1, 29.4,
   and 30.1. That check alone does not verify personal workflows or GUI/terminal
   parity. If reproducing compilation checks, use a temporary copy.

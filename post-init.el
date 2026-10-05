@@ -51,6 +51,31 @@
   ;; Its on-load state is steady and does not need permanent mode-line space.
   (my/hide-mode-line-lighter 'compile-angel-on-load-mode))
 
+;; Each Emacs build compiles packages into its own subdirectory of the user
+;; eln-cache, named after `comp-native-version-dir'. After a Homebrew upgrade,
+;; the subdirectories of earlier builds stay on disk. Delete them when Emacs
+;; is first idle after startup. The first entry of `native-comp-eln-load-path'
+;; is the user cache; the cache in the Emacs.app bundle is not touched.
+;; `delete-directory' deletes permanently here: its TRASH argument is nil, so
+;; `delete-by-moving-to-trash' does not apply.
+(defun my/delete-old-eln-caches ()
+  "Delete the native compilation caches of other Emacs builds."
+  (when (and (featurep 'native-compile)
+             (boundp 'comp-native-version-dir))
+    (let ((cache-dir (car native-comp-eln-load-path)))
+      (when (file-directory-p cache-dir)
+        (dolist (dir (directory-files cache-dir t
+                                      "\\`[0-9]+_[0-9]+-[0-9a-f]+\\'"))
+          (when (and (file-directory-p dir)
+                     (not (equal (file-name-nondirectory dir)
+                                 comp-native-version-dir)))
+            (delete-directory dir t)
+            (message "Deleted the native compilation cache %s"
+                     (abbreviate-file-name dir))))))))
+
+(unless noninteractive
+  (run-with-idle-timer 10 nil #'my/delete-old-eln-caches))
+
 ;; Use MesloLGL Nerd Font Mono at 15 pt for graphical frames. Terminal frames
 ;; ignore these attributes and use the font of the terminal emulator.
 ;; Set the default for all frames. Emacs applies it while it creates a frame,
