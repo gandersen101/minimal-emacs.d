@@ -32,32 +32,38 @@ add a narrow exception when introducing a file that belongs in version control.
 Keep installed packages, caches, compiled output, histories, sessions, and other
 runtime state out of Git. Do not edit installed package sources under `var/`.
 
-## Terminal, tmux, and GUI parity
+## Daemon, GUI, and terminal frames
 
-Treat standalone terminal Emacs, terminal Emacs running inside tmux, and
-graphical Emacs as one cohesive working environment. Keep commands, editing
-behavior, completion, navigation, undo/redo, clipboard integration, and session
-workflows as closely mirrored as each interface permits.
+The owner uses graphical Emacs as client frames of an Emacs daemon. Treat that
+environment as the primary target for design, testing, and troubleshooting.
 
-- The owner normally runs terminal Emacs inside tmux. Treat that environment as
-  the primary target for design, testing, and troubleshooting. Standalone
-  terminal Emacs and GUI Emacs remain fully supported; do not regress them.
-- tmux sits between the terminal and Emacs. It can intercept or change keys,
-  mouse events, colors, and clipboard escape sequences. Read `~/.tmux.conf`
-  before you change behavior that crosses that boundary. For example, the tmux
-  prefix is `C-a`, so Emacs receives `C-a` only after the owner presses it twice.
+- A launchd agent starts the daemon at login. The daemon has no frame until a
+  client asks for one. `bin/install-emacs-daemon` installs the agent, and
+  `bin/install-emacs-daemon --uninstall` removes it. The daemon writes its
+  output to `~/Library/Logs/emacs-daemon.log`.
+- The owner opens GUI frames with `Emacs Client.app` or `emacsclient -c`.
+  `~/.profile` sets `$EDITOR` to `emacsclient -c` in external terminals and
+  to `emacsclient` in Emacs terminals such as vterm. A standalone Emacs starts
+  a server only when no daemon or other Emacs runs one.
+- Do not stop or restart the owner's daemon. It holds the owner's buffers. Use
+  an isolated daemon for tests (see Validation).
+- The daemon loads this configuration before any frame exists, and GUI and
+  terminal frames can exist at the same time. Do not use a check at startup,
+  such as `display-graphic-p`, to select behavior for all frames. Configure
+  each frame from `after-make-frame-functions` or
+  `server-after-make-frame-hook`, use `default-frame-alist`, or check the
+  selected frame when a command runs.
+- Terminal frames, such as `emacsclient -t` inside tmux, are a secondary
+  interface. Keep core editing, navigation, and file workflows usable there.
+  Do not add terminal-specific or tmux-specific workarounds for keys that a
+  terminal cannot send. GUI-only keys are acceptable, for example `C-S-z` and
+  `C-?` for redo. An important command must also have a key that a terminal
+  can send, for example `C-M-_` for redo.
 - Share configuration and keybindings across interfaces. Limit conditional
   setup to capabilities that actually differ.
-- Ensure important commands have terminal-compatible bindings. Do not rely solely
-  on GUI modifiers, shifted control keys, mouse actions, or key combinations the
-  terminal cannot distinguish; provide an accessible alternative when needed.
-- For completion popups and other graphical features, check terminal support and
-  provide a usable fallback. Cosmetic differences in fonts, icons, toolbars, and
-  frame geometry are acceptable when the underlying workflow remains available.
-- Check display capabilities for the relevant frame, such as with
-  `display-graphic-p`. Account for frames created later and mixed GUI/terminal
-  clients in daemon sessions; avoid a one-time startup check that permanently
-  selects behavior for every frame.
+- For completion popups and other graphical features, check terminal support.
+  A usable fallback in terminal frames is sufficient. Cosmetic differences in
+  fonts, icons, toolbars, and frame geometry are acceptable.
 - Preserve consistent clipboard and external-tool behavior. The current setup
   includes macOS clipboard helpers and `exec-path-from-shell` for GUI/daemon
   environment synchronization. Guard new platform-specific integrations by OS
@@ -95,11 +101,15 @@ workflows as closely mirrored as each interface permits.
 - For Lisp changes, check syntax with `check-parens` in `emacs-lisp-mode` and run
   focused checks for the affected behavior. Avoid creating compiled init files
   in this live configuration directory merely to validate syntax.
-- Test relevant interactive behavior first with `emacs -nw --debug-init` inside
-  tmux. Then test standalone `emacs -nw --debug-init` and a graphical Emacs
-  started with `--debug-init`. Use this configuration and the intended Emacs
-  executable. Test later-created frames and GUI/terminal clients when changing
-  frame-dependent or daemon behavior.
+- Test relevant interactive behavior first in GUI client frames of an isolated
+  daemon. Copy the configuration (with `var/elpa/`) to a temporary directory
+  with `cp -Rp`. Without the original timestamps, Emacs can load package
+  sources in place of their `.elc` files, and compile-angel then fails during
+  init. Start `emacs --init-directory=DIR --fg-daemon=NAME` and open frames with
+  `emacsclient -s NAME -c`. A daemon shows startup errors only in its output,
+  `*Messages*`, and `*Warnings*`, so read them. Then test a standalone
+  graphical Emacs started with `--debug-init`. Test an `emacsclient -s NAME -t`
+  frame when the change affects terminal frames.
 - Batch mode and `emacs -Q` do not exercise normal interactive startup. Use an
   isolated configuration/runtime directory for tests that might install packages,
   restore sessions, or overwrite saved state.

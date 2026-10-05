@@ -20,5 +20,6 @@ lisp/*/*
 !lisp/*/README.md
 !bin/
 !bin/update-upstream-main
+!bin/install-emacs-daemon
 !.github/
 !.LICENSE

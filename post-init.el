@@ -51,17 +51,24 @@
   ;; Its on-load state is steady and does not need permanent mode-line space.
   (my/hide-mode-line-lighter 'compile-angel-on-load-mode))
 
-;; Use MesloLGL Nerd Font Mono at 15 pt for graphical frames. Terminal Emacs
-;; continues to use the font selected by the terminal emulator.
-(defun my/set-gui-default-font (frame)
-  "Set the default font for graphical FRAME."
-  (when (display-graphic-p frame)
-    (set-face-attribute 'default frame
-                        :family "MesloLGL Nerd Font Mono"
-                        :height 150)))
+;; Use MesloLGL Nerd Font Mono at 15 pt for graphical frames. Terminal frames
+;; ignore these attributes and use the font of the terminal emulator.
+;; Set the default for all frames. Emacs applies it while it creates a frame,
+;; before it fixes the frame size. A daemon creates its GUI frames after
+;; startup. A font change from `after-make-frame-functions' is too late,
+;; because `frame-inhibit-implied-resize' keeps the pixel size of the frame.
+;; The frame then gets fewer columns.
+(set-face-attribute 'default nil
+                    :family "MesloLGL Nerd Font Mono"
+                    :height 150)
 
-(add-hook 'after-make-frame-functions #'my/set-gui-default-font)
-(my/set-gui-default-font (selected-frame))
+;; Upstream init.el enables `context-menu-mode' only when the startup frame is
+;; graphical. A daemon starts without a frame, so its GUI client frames do not
+;; get the menu. The mode is global, and terminal frames are not affected.
+(when (and (daemonp)
+           (memq 'context-menu minimal-emacs-ui-features)
+           (fboundp 'context-menu-mode))
+  (add-hook 'after-init-hook #'context-menu-mode))
 
 ;; Environment variable synchronization (macOS)
 (use-package exec-path-from-shell
@@ -77,6 +84,25 @@
     (add-to-list 'exec-path-from-shell-variables var))
   ;; Initialization also imports PATH and updates `exec-path'.
   (exec-path-from-shell-initialize))
+
+;; The Emacs server allows external programs such as `emacsclient' to connect to
+;; a single running instance of Emacs. This makes it possible to open files in
+;; the existing session rather than starting a new Emacs process each time.
+;;
+;; Normally a launchd agent runs Emacs as a daemon, and the daemon starts its
+;; own server (see bin/install-emacs-daemon). This block is for a standalone
+;; Emacs. It starts a server only when no other Emacs runs one.
+(use-package server
+  :ensure nil
+  :if (not (daemonp))
+  :preface
+  (defun my/server-start ()
+    "Start the Emacs server if no server process is currently active."
+    (unless (server-running-p)
+      (server-start)))
+  :init
+  ;; Defer starting the server until after Emacs has finished initializing
+  (add-hook 'emacs-startup-hook #'my/server-start))
 
 ;; Keep terminal and graphical Emacs in sync with the macOS clipboard.
 ;; GUI frames retain Emacs's native clipboard integration; terminal frames
