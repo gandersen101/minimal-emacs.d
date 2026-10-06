@@ -1053,7 +1053,89 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
     (setq-local hscroll-margin 0)
 
     ;; Suppress prompts for terminating active processes when closing vterm
-    (setq-local confirm-kill-processes nil))
+    (setq-local confirm-kill-processes nil)
+
+    ;; Follow the directory of the foreground program
+    (add-hook 'pre-command-hook #'my/vterm-sync-directory nil t))
+
+  (defun my/vterm--foreground-pid ()
+    "Return the PID of the foreground program in this buffer, or nil.
+When no child program runs, the shell is the foreground program."
+    (when-let* ((proc (get-buffer-process (current-buffer))))
+      (let ((pgrp (process-running-child-p proc)))
+        ;; An integer is the process group of the foreground program. nil
+        ;; means that the shell has the terminal. t means that the system
+        ;; cannot tell.
+        (cond ((integerp pgrp) pgrp)
+              ((null pgrp) (process-id proc))))))
+
+  (defun my/vterm--foreground-command ()
+    "Return the command name of the foreground program in this buffer, or nil."
+    (when-let* ((pid (my/vterm--foreground-pid)))
+      (alist-get 'comm (process-attributes pid))))
+
+  ;; vterm sets `default-directory' only when the shell prints OSC 51;A, and
+  ;; this setup uses no shell configuration for that. In tmux, the shell
+  ;; writes to tmux, and tmux does not send that sequence to vterm. A shell
+  ;; also prints the sequence only at a prompt, so a change to another tmux
+  ;; pane or window sends nothing. So before a command runs, ask tmux for the
+  ;; directory of the active pane, or ask lsof for the directory of the
+  ;; foreground program.
+  (defun my/vterm--program-output (program &rest args)
+    "Run PROGRAM with ARGS and return its output, or nil when it fails."
+    (when-let* ((executable (executable-find program)))
+      (with-temp-buffer
+        ;; `call-process' cannot run in a remote `default-directory'.
+        (let ((default-directory (expand-file-name "~/")))
+          (and (eql 0 (apply #'call-process executable nil '(t nil) nil args))
+               (buffer-string))))))
+
+  (defun my/vterm--existing-directory (dir)
+    "Return DIR as a directory name when DIR is an existing directory."
+    (and dir
+         (file-directory-p dir)
+         (file-name-as-directory dir)))
+
+  (defun my/vterm--tmux-directory ()
+    "Return the directory of the active tmux pane in this buffer, or nil.
+The tmux client in this buffer uses the tty of the vterm process, and
+tmux finds the client by that tty. Only the default tmux server is
+asked."
+    (when-let* ((tty (process-tty-name (get-buffer-process (current-buffer))))
+                (output (my/vterm--program-output
+                         "tmux" "display-message" "-p" "-c" tty
+                         "#{pane_current_path}")))
+      (my/vterm--existing-directory (string-trim-right output))))
+
+  (defun my/vterm--process-directory (pid)
+    "Return the working directory of process PID, or nil."
+    (when-let* ((output (my/vterm--program-output
+                         "lsof" "-a" "-p" (number-to-string pid)
+                         "-d" "cwd" "-Fn")))
+      ;; -Fn prints one field on each line. The name line starts with "n".
+      (and (string-match "^n\\(/.*\\)$" output)
+           (my/vterm--existing-directory (match-string 1 output)))))
+
+  (defun my/vterm--directory ()
+    "Return the directory of the foreground program in this buffer, or nil.
+For tmux, return the directory of the active tmux pane."
+    (when-let* ((pid (my/vterm--foreground-pid)))
+      (if (equal (alist-get 'comm (process-attributes pid)) "tmux")
+          (my/vterm--tmux-directory)
+        (my/vterm--process-directory pid))))
+
+  (defun my/vterm-sync-directory ()
+    "Set `default-directory' to the directory of the foreground program.
+Skip vterm commands. They send keys to the terminal, run for each key,
+and do not use the directory. Skip a remote `default-directory': there
+the vterm process is the local ssh process of TRAMP."
+    (unless (or (and (symbolp this-command)
+                     (string-match-p "\\`\\(?:my/\\)?vterm"
+                                     (symbol-name this-command)))
+                (file-remote-p default-directory))
+      (when-let* ((dir (my/vterm--directory)))
+        (setq default-directory dir
+              list-buffers-directory dir))))
 
   ;; vterm does not report mouse events to the program in the terminal. The
   ;; wheel only scrolls the Emacs buffer, and a click only moves the Emacs
@@ -1065,13 +1147,8 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
 
   (defun my/vterm-mouse-program-p ()
     "Return non-nil when a program that reads mouse reports runs in this buffer."
-    (let* ((proc (get-buffer-process (current-buffer)))
-           ;; An integer is the process group of the foreground program.
-           (pgrp (and proc (process-running-child-p proc))))
-      (and (integerp pgrp)
-           (member (alist-get 'comm (process-attributes pgrp))
-                   my/vterm-mouse-programs)
-           t)))
+    (and (member (my/vterm--foreground-command) my/vterm-mouse-programs)
+         t))
 
   (defun my/vterm--mouse-col-row (posn window)
     "Return the (COLUMN . ROW) of POSN in the text area of WINDOW, or nil.
