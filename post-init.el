@@ -1074,13 +1074,20 @@ When no child program runs, the shell is the foreground program."
     (when-let* ((pid (my/vterm--foreground-pid)))
       (alist-get 'comm (process-attributes pid))))
 
-  ;; vterm sets `default-directory' only when the shell prints OSC 51;A, and
-  ;; this setup uses no shell configuration for that. In tmux, the shell
-  ;; writes to tmux, and tmux does not send that sequence to vterm. A shell
-  ;; also prints the sequence only at a prompt, so a change to another tmux
-  ;; pane or window sends nothing. So before a command runs, ask tmux for the
-  ;; directory of the active pane, or ask lsof for the directory of the
-  ;; foreground program.
+  ;; vterm sets `default-directory' only when the shell prints OSC 51;A.
+  ;; ~/.zshrc prints it at the end of each prompt, but not in tmux: there the
+  ;; shell writes to tmux, and tmux does not send that sequence to vterm. A
+  ;; shell also prints the sequence only at a prompt, so a change to another
+  ;; tmux pane or window sends nothing. So before a command runs, ask tmux for
+  ;; the directory of the active pane. For a shell that does not print the
+  ;; sequence, ask lsof for the directory of the foreground program.
+  (defvar-local my/vterm--shell-reports-directory nil
+    "Non-nil when the shell in this buffer prints OSC 51;A.")
+
+  (defun my/vterm--note-shell-directory (&rest _)
+    "Record that the shell in this buffer prints OSC 51;A."
+    (setq my/vterm--shell-reports-directory t))
+
   (defun my/vterm--program-output (program &rest args)
     "Run PROGRAM with ARGS and return its output, or nil when it fails."
     (when-let* ((executable (executable-find program)))
@@ -1118,11 +1125,14 @@ asked."
 
   (defun my/vterm--directory ()
     "Return the directory of the foreground program in this buffer, or nil.
-For tmux, return the directory of the active tmux pane."
+For tmux, return the directory of the active tmux pane. Without tmux,
+return nil when the shell prints OSC 51;A, because vterm then sets the
+directory."
     (when-let* ((pid (my/vterm--foreground-pid)))
-      (if (equal (alist-get 'comm (process-attributes pid)) "tmux")
-          (my/vterm--tmux-directory)
-        (my/vterm--process-directory pid))))
+      (cond ((equal (alist-get 'comm (process-attributes pid)) "tmux")
+             (my/vterm--tmux-directory))
+            ((not my/vterm--shell-reports-directory)
+             (my/vterm--process-directory pid)))))
 
   (defun my/vterm-sync-directory ()
     "Set `default-directory' to the directory of the foreground program.
@@ -1233,4 +1243,8 @@ Without such a program, select text as `mouse-drag-region' does."
 
   (setq vterm-timer-delay 0.05)  ; Faster vterm
   (setq vterm-kill-buffer-on-exit t)
-  (setq vterm-max-scrollback 10000))
+  (setq vterm-max-scrollback 10000)
+
+  :config
+  ;; vterm calls this function for each OSC 51;A from the shell
+  (advice-add #'vterm--set-directory :after #'my/vterm--note-shell-directory))
