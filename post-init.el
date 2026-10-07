@@ -499,8 +499,9 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (setq easysession-switch-to-exclude-current nil)
 
   ;; Display the active session name in the mode-line lighter.
-  ;; Keep the useful session name but omit the package's static label.
-  (setq easysession-save-mode-lighter "")
+  ;; A short label names the mode and keeps the leading space, so the session
+  ;; name does not attach to the lighter before it.
+  (setq easysession-save-mode-lighter " Session")
   (setq easysession-save-mode-lighter-show-session-name t)
 
   ;; Optionally, the session name can be shown in the modeline info area:
