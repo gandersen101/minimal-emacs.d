@@ -1231,6 +1231,56 @@ Without such a program, select text as `mouse-drag-region' does."
            ?m))
       (mouse-drag-region event)))
 
+  ;; easysession saves file, Dired, and indirect buffers, but not vterm buffers.
+  ;; A restart also ends the vterm processes. So a window that showed a vterm
+  ;; buffer did not come back. For a managed major mode, easysession saves the
+  ;; name and directory of each buffer in that mode. A session load then calls
+  ;; a function that makes each buffer again, before it restores the windows.
+  ;; The load skips a name that is a live buffer, so a daemon keeps its shells
+  ;; between frames. Restore only a buffer that a saved window showed. A new
+  ;; shell in a hidden buffer gives nothing that a new `vterm' does not give.
+  (defun my/vterm--save ()
+    "Return the easysession data for the vterm buffer that is current.
+Mark the buffer as shown when a window in a saved frame shows it.
+`easysession-before-save-hook' marks the frames that easysession skips."
+    (when (seq-some (lambda (window)
+                      (not (frame-parameter (window-frame window)
+                                            'easysession-dont-save)))
+                    (get-buffer-window-list nil nil 0))
+      '((shown . t))))
+
+  (defun my/vterm--restorable-p (state)
+    "Return non-nil when easysession should restore the saved vterm STATE.
+A saved window must show the buffer, and its directory must be local and
+exist. A remote directory needs a TRAMP connection, which can prompt during
+a load."
+    (let ((dir (alist-get 'default-directory state)))
+      (and (alist-get 'shown (alist-get 'data state))
+           dir
+           (not (file-remote-p dir))
+           (file-directory-p dir))))
+
+  ;; vterm starts the shell with "stty rows R columns C", and takes R and C from
+  ;; the selected window. During a load, that window does not show the buffer,
+  ;; and the frame can get its saved size after the load. Emacs resizes the
+  ;; terminal when the windows change, but stty can run after that resize and
+  ;; set the old size again. The first output of the shell comes after stty,
+  ;; so resize the terminal again at that output.
+  (defun my/vterm--restore (state)
+    "Start a shell in a new vterm buffer from the saved easysession STATE."
+    (require 'vterm)
+    (with-current-buffer (get-buffer-create (alist-get 'buffer-name state))
+      (setq default-directory (alist-get 'default-directory state))
+      (vterm-mode)
+      (add-function :before (process-filter (get-buffer-process (current-buffer)))
+                    #'my/vterm--resize-after-stty)))
+
+  (defun my/vterm--resize-after-stty (process _output)
+    "Give each terminal the size of its windows at the first output of PROCESS."
+    (remove-function (process-filter process) #'my/vterm--resize-after-stty)
+    ;; `window-configuration-change-hook' runs this function after a change.
+    (window--adjust-process-windows))
+
   :bind
   (:map vterm-mode-map
         ("<wheel-up>" . my/vterm-wheel)
@@ -1244,6 +1294,12 @@ Without such a program, select text as `mouse-drag-region' does."
 
   :init
   (add-hook 'vterm-mode-hook #'my-vterm--setup)
+
+  (with-eval-after-load 'easysession
+    (easysession-add-managed-major-mode 'vterm-mode
+                                        :save #'my/vterm--save
+                                        :restore #'my/vterm--restore
+                                        :validate #'my/vterm--restorable-p))
 
   (setq vterm-timer-delay 0.05)  ; Faster vterm
   (setq vterm-kill-buffer-on-exit t)
