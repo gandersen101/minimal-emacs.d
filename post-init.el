@@ -1171,12 +1171,16 @@ A position in another window, a fringe, a margin, or the mode line gives nil."
     "Send an SGR mouse report to the program in the vterm buffer of WINDOW.
 CODE is the button code. COL-ROW is the 0-based (COLUMN . ROW) in WINDOW.
 FINAL is ?M for a press or a motion, and ?m for a release."
-    (with-current-buffer (window-buffer window)
-      (vterm-send-string
-       (format "\e[<%d;%d;%d%c" code
-               (1+ (max 0 (min (car col-row) (1- (window-body-width window)))))
-               (1+ (max 0 (min (cdr col-row) (1- (window-body-height window)))))
-               final))))
+    ;; Do not use `vterm-send-string'. After it sends the string, it waits up
+    ;; to `vterm-timer-delay' for output from the program. tmux prints nothing
+    ;; for a wheel event at the end of the history or outside copy mode. A
+    ;; trackpad sends many wheel events, so each wait added to a long freeze.
+    (process-send-string
+     (window-buffer window)
+     (format "\e[<%d;%d;%d%c" code
+             (1+ (max 0 (min (car col-row) (1- (window-body-width window)))))
+             (1+ (max 0 (min (cdr col-row) (1- (window-body-height window)))))
+             final)))
 
   (defun my/vterm--mouse-window (event)
     "Return the window of EVENT when a mouse-aware program reads the mouse there.
