@@ -1306,6 +1306,11 @@ a load."
   (setq vterm-kill-buffer-on-exit t)
   (setq vterm-max-scrollback 10000)
 
+  ;; tmux sends each copy to the outer terminal as OSC 52. Put that text in
+  ;; the kill ring, and so in the macOS clipboard. vterm disables this by
+  ;; default because any program in the terminal can then set the clipboard.
+  (setq vterm-enable-manipulate-selection-data-by-osc52 t)
+
   :config
   ;; vterm calls this function for each OSC 51;A from the shell
   (advice-add #'vterm--set-directory :after #'my/vterm--note-shell-directory))
