@@ -965,7 +965,58 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (setq diff-hl-global-modes '(not pdf-view-mode image-mode))
   (setq diff-hl-flydiff-delay 0.4)  ; Faster optional flydiff updates
   (setq diff-hl-show-staged-changes nil)  ; Separate staged changes
-  (setq diff-hl-update-async t))  ; Do not block Emacs
+  (setq diff-hl-update-async t)  ; Do not block Emacs
+
+  :config
+  ;; diff-hl updates its marks when Emacs saves, reverts, or commits a file.
+  ;; A commit or reset in a shell, vterm, or Claude Code changes the Git state
+  ;; but not the file, so auto-revert and diff-hl do not see the change.
+  ;; Refresh the visible buffers when a frame gets focus, when the selected
+  ;; window changes, or when a window shows a different buffer.
+  (defvar my/diff-hl-refresh-timer nil
+    "Idle timer that runs `my/diff-hl-refresh-visible-buffers'.")
+
+  (defun my/diff-hl-refresh-visible-buffers ()
+    "Refresh the VC state and diff-hl marks of each visible file buffer."
+    (setq my/diff-hl-refresh-timer nil)
+    ;; Read each frame, because `window-list-1' with `visible' reads only the
+    ;; frames on the current terminal. GUI and terminal frames can coexist.
+    (dolist (buffer (delete-dups
+                     (mapcan (lambda (frame)
+                               (mapcar #'window-buffer
+                                       (window-list frame 'nomini)))
+                             (visible-frame-list))))
+      (with-current-buffer buffer
+        (when (and diff-hl-mode
+                   buffer-file-name
+                   ;; VC calls over TRAMP are slow.
+                   (not (file-remote-p buffer-file-name)))
+          ;; diff-hl uses the cached VC state, which can also be stale.
+          (vc-refresh-state)
+          (diff-hl-update)))))
+
+  ;; The idle timer merges several window changes into one refresh, and the
+  ;; refresh does not delay a command. Exit from the minibuffer selects a
+  ;; window again, so changes during minibuffer input (for example, consult
+  ;; previews) need no refresh.
+  (defun my/diff-hl-schedule-refresh (&rest _)
+    "Refresh the diff-hl marks of visible buffers when Emacs is idle."
+    (unless (or my/diff-hl-refresh-timer
+                (active-minibuffer-window))
+      (setq my/diff-hl-refresh-timer
+            (run-with-idle-timer 0.5 nil
+                                 #'my/diff-hl-refresh-visible-buffers))))
+
+  (defun my/diff-hl-refresh-on-focus ()
+    "Refresh the diff-hl marks of visible buffers when a frame gets focus."
+    (when (seq-some (lambda (frame) (eq (frame-focus-state frame) t))
+                    (frame-list))
+      (my/diff-hl-schedule-refresh)))
+
+  (add-function :after after-focus-change-function
+                #'my/diff-hl-refresh-on-focus)
+  (add-hook 'window-selection-change-functions #'my/diff-hl-schedule-refresh)
+  (add-hook 'window-buffer-change-functions #'my/diff-hl-schedule-refresh))
 
 ;; Org mode is a major mode designed for organizing notes, planning, task
 ;; management, and authoring documents using plain text with a simple and
