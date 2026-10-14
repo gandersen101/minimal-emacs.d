@@ -290,6 +290,13 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
 ;; Programming and utility buffers retain the upstream truncated-line default.
 (add-hook 'text-mode-hook #'visual-line-mode)
 
+;; Let C-v, M-v, M-< and M-> move between matches during isearch. Without this,
+;; these keys exit isearch and then move point.
+(use-package isearch
+  :ensure nil
+  :init
+  (setq isearch-allow-motion t))
+
 ;; Corfu enhances in-buffer completion by displaying a compact popup with
 ;; current candidates, positioned either below or above the point. Candidates
 ;; can be selected by navigating up or down.
