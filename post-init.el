@@ -1333,6 +1333,14 @@ a load."
     ;; `window-configuration-change-hook' runs this function after a change.
     (window--adjust-process-windows))
 
+  ;; `M-y' runs `vterm-yank-pop' on the Emacs kill ring. This command sends
+  ;; `M-y' to the shell instead, so that zsh `yank-pop' cycles the zsh kill
+  ;; ring after `C-c C-y' (zsh `yank').
+  (defun my/vterm-send-meta-y ()
+    "Send `M-y' to the program in the terminal."
+    (interactive)
+    (vterm-send-key "y" nil t))
+
   :bind
   (:map vterm-mode-map
         ("<wheel-up>" . my/vterm-wheel)
@@ -1342,7 +1350,12 @@ a load."
         ("<triple-wheel-up>" . my/vterm-wheel)
         ("<triple-wheel-down>" . my/vterm-wheel)
         ;; The double and triple press events use this binding too.
-        ("<down-mouse-1>" . my/vterm-mouse-drag))
+        ("<down-mouse-1>" . my/vterm-mouse-drag)
+        ;; The global `M-y' is `consult-yank-pop'. The vterm remap of
+        ;; `yank-pop' does not apply to that command, and the buffer is
+        ;; read-only.
+        ("M-y" . vterm-yank-pop)
+        ("C-c M-y" . my/vterm-send-meta-y))
 
   :init
   (add-hook 'vterm-mode-hook #'my-vterm--setup)
