@@ -1385,3 +1385,191 @@ a load."
   :config
   ;; vterm calls this function for each OSC 51;A from the shell
   (advice-add #'vterm--set-directory :after #'my/vterm--note-shell-directory))
+
+;; Programs print files as paths, often with a line number (`src/foo.py:12'),
+;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
+;; These commands open the link at point, or else a link that you pick from
+;; the visible part of the window, in Emacs or in Obsidian. In vterm, point is
+;; at the terminal cursor, so the pick list is the usual way to choose a link.
+;; A relative path resolves against `default-directory', which
+;; `my/vterm-sync-directory' sets to the directory of the active tmux pane.
+(defvar my/obsidian-config-file
+  (expand-file-name "~/Library/Application Support/obsidian/obsidian.json")
+  "The file where Obsidian lists its vaults.")
+
+(defun my/obsidian-vaults (config-file)
+  "Return an alist of (NAME . DIRECTORY) for the vaults in CONFIG-FILE.
+Obsidian names a vault after its folder."
+  (when (file-readable-p config-file)
+    (with-temp-buffer
+      (insert-file-contents config-file)
+      (mapcar (lambda (vault)
+                (let ((dir (file-name-as-directory
+                            (alist-get 'path (cdr vault)))))
+                  (cons (file-name-nondirectory (directory-file-name dir))
+                        dir)))
+              (alist-get 'vaults (json-parse-buffer :object-type 'alist))))))
+
+(defun my/obsidian-url-file (url vaults)
+  "Return the existing file that the Obsidian URL opens, or nil.
+VAULTS is an alist of (NAME . DIRECTORY). For a URL without a vault
+parameter, use the first vault that has the file. The file parameter of
+URL can leave out the `.md' extension."
+  (let* ((query (url-parse-query-string
+                 (substring url (1+ (or (string-search "?" url) -1)))))
+         (vault (cadr (assoc "vault" query)))
+         (file (cadr (assoc "file" query))))
+    (when file
+      (seq-some (lambda (dir)
+                  (seq-find #'file-exists-p
+                            (list (expand-file-name file dir)
+                                  (expand-file-name (concat file ".md") dir))))
+                (if vault
+                    (ensure-list (cdr (assoc vault vaults)))
+                  (mapcar #'cdr vaults))))))
+
+(defun my/obsidian-file-url (file vaults)
+  "Return the Obsidian URL that opens FILE, or nil when FILE is in no vault.
+VAULTS is an alist of (NAME . DIRECTORY)."
+  (let ((file (expand-file-name file)))
+    (when-let* ((vault (seq-find (lambda (vault)
+                                   (string-prefix-p (cdr vault) file))
+                                 vaults)))
+      (concat "obsidian://open?vault=" (url-hexify-string (car vault))
+              "&file=" (url-hexify-string
+                        (string-remove-suffix
+                         ".md" (file-relative-name file (cdr vault))))))))
+
+(defconst my/file-link-regexp
+  (rx (or bol (any space "([{<\"'`|"))
+      (group (+ (not (any space "()[]{}<>\"'`|,;")))))
+  "A regexp that matches a word that can be a file link in group 1.")
+
+(defun my/file-link-parse (word vaults)
+  "Return (FILE LINE COL) when WORD names an existing file, or nil.
+WORD is an Obsidian URL, or a path with an optional :LINE or :LINE:COL
+suffix. LINE and COL are nil when WORD has no suffix. VAULTS is an alist
+of (NAME . DIRECTORY)."
+  (let ((word (string-trim-right word "[.,;:]+")))
+    (if (string-prefix-p "obsidian://" word)
+        (when-let* ((file (my/obsidian-url-file word vaults)))
+          (list file nil nil))
+      (when (string-match (rx bos (group (+? anything))
+                              (? ":" (group (+ digit))
+                                 (? ":" (group (+ digit))))
+                              eos)
+                          word)
+        (let ((path (match-string 1 word))
+              (line (match-string 2 word))
+              (col (match-string 3 word))
+              ;; Without file name handlers, a word such as /usr/bin:/bin
+              ;; cannot start a TRAMP connection.
+              (file-name-handler-alist nil))
+          (when (and (string-match-p "[/.]" path)
+                     (file-regular-p (expand-file-name path)))
+            (list (expand-file-name path)
+                  (and line (string-to-number line))
+                  (and col (string-to-number col)))))))))
+
+(defun my/file-link--complete (word end vaults)
+  "Return (LINK . END) for WORD, which ends at END, or nil.
+LINK is (FILE LINE COL), as `my/file-link-parse' returns. A TUI wraps a
+long link onto the next lines and indents them. While WORD names no file,
+looks like a link, and ends a line, append the first word of the next line."
+  (save-excursion
+    (let ((link (my/file-link-parse word vaults))
+          (lines 3))
+      (while (and (not link)
+                  (string-match-p "\\`obsidian://\\|/" word)
+                  (> lines 0)
+                  (progn (goto-char end)
+                         (skip-chars-forward " \t")
+                         (eolp))
+                  (zerop (forward-line 1))
+                  (looking-at "[ \t]*\\([^ \t\n()\"'`<>|]+\\)"))
+        (setq word (concat word (match-string-no-properties 1))
+              end (match-end 1)
+              link (my/file-link-parse word vaults)
+              lines (1- lines)))
+      (and link (cons link end)))))
+
+(defun my/file-links (start end vaults)
+  "Return the links between START and END that name an existing file.
+Return the last link first. Each element is (FILE LINE COL LINK-START
+LINK-END). VAULTS is an alist of (NAME . DIRECTORY)."
+  (save-excursion
+    (goto-char start)
+    (let (links)
+      (while (re-search-forward my/file-link-regexp end t)
+        (let ((word-start (match-beginning 1)))
+          (when-let* ((found (my/file-link--complete
+                              (match-string-no-properties 1) (match-end 1)
+                              vaults)))
+            (push (append (car found) (list word-start (cdr found))) links))))
+      links)))
+
+(defun my/file-link-label (link)
+  "Return LINK, a list that starts with FILE LINE COL, as FILE:LINE:COL."
+  (pcase-let ((`(,file ,line ,col) link))
+    (concat (abbreviate-file-name file)
+            (and line (format ":%d" line))
+            (and col (format ":%d" col)))))
+
+(defun my/file-link-read (vaults)
+  "Return the link at point, or else a link picked from the window.
+The pick list holds the links in the visible part of the selected window.
+A link is (FILE LINE COL LINK-START LINK-END). VAULTS is an alist of
+\(NAME . DIRECTORY)."
+  (let* ((links (my/file-links (window-start) (window-end nil t) vaults))
+         (at-point (seq-find (pcase-lambda (`(,_ ,_ ,_ ,start ,end))
+                               (<= start (point) end))
+                             links)))
+    (cond
+     (at-point at-point)
+     (links
+      (let* ((labeled (seq-uniq (mapcar (lambda (link)
+                                          (cons (my/file-link-label link) link))
+                                        links)
+                                (lambda (a b) (equal (car a) (car b)))))
+             (labels (mapcar #'car labeled)))
+        (cdr (assoc (completing-read
+                     "Open link: "
+                     (lambda (string pred action)
+                       ;; Keep the buffer order, last link first
+                       (if (eq action 'metadata)
+                           '(metadata (display-sort-function . identity))
+                         (complete-with-action action labels string pred)))
+                     nil t)
+                    labeled))))
+     (t (user-error "No links to existing files in this window")))))
+
+(defun my/file-link-open-in-emacs (link)
+  "Visit the file of LINK, and go to its line and column.
+LINK is (FILE LINE COL ...), the link at point or a link picked from the
+window."
+  (interactive
+   (list (my/file-link-read (my/obsidian-vaults my/obsidian-config-file))))
+  (pcase-let ((`(,file ,line ,col) link))
+    (find-file file)
+    (when line
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (when col
+        (move-to-column (max 0 (1- col)))))))
+
+(defun my/file-link-open-in-obsidian (link vaults)
+  "Open the file of LINK in Obsidian with the macOS `open' command.
+LINK is (FILE ...), the link at point or a link picked from the window.
+VAULTS is an alist of (NAME . DIRECTORY)."
+  (interactive
+   (let ((vaults (my/obsidian-vaults my/obsidian-config-file)))
+     (list (my/file-link-read vaults) vaults)))
+  (call-process (or (executable-find "open")
+                    (user-error "Cannot find the open command"))
+                nil 0 nil
+                (or (my/obsidian-file-url (car link) vaults)
+                    (user-error "%s is not in an Obsidian vault"
+                                (abbreviate-file-name (car link))))))
+
+(global-set-key (kbd "C-c o e") #'my/file-link-open-in-emacs)
+(global-set-key (kbd "C-c o o") #'my/file-link-open-in-obsidian)
