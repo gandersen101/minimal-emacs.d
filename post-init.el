@@ -1362,7 +1362,14 @@ a load."
         ;; `yank-pop' does not apply to that command, and the buffer is
         ;; read-only.
         ("M-y" . vterm-yank-pop)
-        ("C-c M-y" . my/vterm-send-meta-y))
+        ("C-c M-y" . my/vterm-send-meta-y)
+        ;; vterm binds only the plain arrows. Emacs runs an unbound shifted
+        ;; key as the plain key, so without these bindings the terminal gets
+        ;; no Shift, and `lma' cannot move a group with `S-<up>'.
+        ("S-<up>" . vterm--self-insert)
+        ("S-<down>" . vterm--self-insert)
+        ("S-<left>" . vterm--self-insert)
+        ("S-<right>" . vterm--self-insert))
 
   :init
   (add-hook 'vterm-mode-hook #'my-vterm--setup)
