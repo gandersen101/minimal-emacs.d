@@ -1393,6 +1393,81 @@ a load."
   ;; vterm calls this function for each OSC 51;A from the shell
   (advice-add #'vterm--set-directory :after #'my/vterm--note-shell-directory))
 
+;; `ghostel' is a terminal emulator on libghostty-vt, the terminal engine of
+;; Ghostty. It runs beside `vterm' as a trial. A native module does the
+;; terminal work. The first `M-x ghostel' offers to download a prebuilt module
+;; from the GitHub release, or to build one with exactly Zig 0.16.0.
+;;
+;; Some `vterm' features above need no config here:
+;; - ghostel adds its own zsh integration, which reports the directory with
+;;   OSC 7. tmux sends OSC 7 for the active pane to an `xterm*' terminal, as
+;;   ~/.tmux.conf asks, and ghostel sets TERM to xterm-ghostty.
+;; - ghostel sends mouse reports, the wheel included, to a program that asks
+;;   for them, such as tmux with `mouse on'.
+;; - ghostel sends the shifted arrows to the terminal.
+;; - ghostel sets the terminal size with the PTY, not with stty, so a
+;;   restored terminal gets the size of its window.
+;;
+;; The trial keeps the ghostel keys. `C-c C-y' runs `ghostel-paste', not the
+;; zsh `yank' of vterm. `C-q' sends the next key to the terminal, so `C-q C-y'
+;; and `C-q M-y' run the zsh `yank' and `yank-pop'.
+(use-package ghostel
+  :if (bound-and-true-p module-file-suffix)
+  :commands (ghostel
+             ghostel-new)
+  ;; `my/ghostel--restore' calls this function before ghostel loads.
+  :autoload ghostel-create
+
+  :preface
+  ;; easysession saves and restores ghostel terminals as it does vterm
+  ;; terminals (see `my/vterm--save'). ghostel also saves an identity, which
+  ;; `ghostel' and `ghostel-project' use to find a terminal again. Restore
+  ;; only shells: an identity of another kind ran a command, such as a build.
+  (defun my/ghostel--save ()
+    "Return the easysession data for the ghostel buffer that is current.
+Return nil when no window in a saved frame shows the buffer."
+    (when (seq-some (lambda (window)
+                      (not (frame-parameter (window-frame window)
+                                            'easysession-dont-save)))
+                    (get-buffer-window-list nil nil 0))
+      `((shown . t)
+        (identity . ,ghostel-identity))))
+
+  (defun my/ghostel--restorable-p (state)
+    "Return non-nil when easysession should restore the saved ghostel STATE.
+A saved window must show the buffer, the buffer must run a shell, and its
+directory must be local and exist."
+    (let ((data (alist-get 'data state))
+          (dir (alist-get 'default-directory state)))
+      (and (alist-get 'shown data)
+           (eq (alist-get 'kind (alist-get 'identity data)) 'term)
+           dir
+           (not (file-remote-p dir))
+           (file-directory-p dir))))
+
+  (defun my/ghostel--restore (state)
+    "Start a shell in a new ghostel buffer from the saved easysession STATE.
+easysession binds `default-directory' to the saved directory."
+    (ghostel-create (alist-get 'buffer-name state)
+                    nil
+                    (alist-get 'identity (alist-get 'data state))))
+
+  :init
+  (with-eval-after-load 'easysession
+    (easysession-add-managed-major-mode 'ghostel-mode
+                                        :save #'my/ghostel--save
+                                        :restore #'my/ghostel--restore
+                                        :validate #'my/ghostel--restorable-p))
+
+  ;; Do not ask before a kill of a ghostel buffer, or before Emacs exits, as
+  ;; in vterm. A tmux session continues without its client.
+  (setq ghostel-query-before-killing nil)
+
+  ;; tmux sends each copy to the outer terminal as OSC 52. Put that text in
+  ;; the kill ring, and so in the macOS clipboard. ghostel disables this by
+  ;; default because any program in the terminal can then set the clipboard.
+  (setq ghostel-enable-osc52 t))
+
 ;; Programs print files as paths, often with a line number (`src/foo.py:12'),
 ;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
 ;; These commands open the link at point, or else a link that you pick from
@@ -1400,6 +1475,7 @@ a load."
 ;; at the terminal cursor, so the pick list is the usual way to choose a link.
 ;; A relative path resolves against `default-directory', which
 ;; `my/vterm-sync-directory' sets to the directory of the active tmux pane.
+;; In ghostel, the OSC 7 from tmux sets it.
 (defvar my/obsidian-config-file
   (expand-file-name "~/Library/Application Support/obsidian/obsidian.json")
   "The file where Obsidian lists its vaults.")
