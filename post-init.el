@@ -1083,6 +1083,18 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (require 'my-python-env)
   (my/python-env-setup))
 
+;; Apheleia runs code formatters on save, asynchronously, without moving
+;; point.  Only Python buffers use it here: Ruff sorts the imports, and then
+;; formats the buffer.  See lisp/my-python-env/README.md.
+(use-package apheleia
+  :commands (apheleia-mode
+             apheleia-format-buffer)
+  :hook ((python-mode . apheleia-mode)
+         (python-ts-mode . apheleia-mode))
+  :config
+  (require 'my-python-env)
+  (my/python-env-apheleia-setup))
+
 ;; `vterm' is an Emacs terminal emulator that provides a fully interactive shell
 ;; experience within Emacs, supporting features such as color, cursor movement,
 ;; and advanced terminal capabilities. Unlike standard Emacs terminal modes,

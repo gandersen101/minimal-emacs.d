@@ -15,6 +15,10 @@
 ;; for each directory that holds a venv.  Only Eglot sees these projects; the
 ;; normal VC project still applies to `project.el' commands.
 ;;
+;; Ruff runs outside pylsp: a Flymake backend lints the buffer, and Apheleia
+;; formatters sort the imports and format the buffer on save.  Each Ruff run
+;; looks up the tool from the directory of the buffer's file.
+;;
 ;; After you create or delete a venv, run `my/python-env-reload'.
 ;;
 ;; See README.md in this directory for the design, config behavior, and
@@ -22,12 +26,16 @@
 
 ;;; Code:
 
+(require 'flymake)
 (require 'project)
 (require 'seq)
 
+(defvar apheleia-formatters)
+(defvar apheleia-mode-alist)
 (defvar eglot-lsp-context)
 (defvar eglot-server-programs)
 (declare-function eglot-current-server "eglot")
+(declare-function eglot-managed-p "eglot")
 (declare-function eglot-shutdown "eglot")
 
 (defgroup my/python-env nil
@@ -124,6 +132,155 @@ Return nil for special buffers and remote files."
        (expand-file-name "pylsp" my/python-env-fallback-bin))
       (executable-find "pylsp")))
 
+(defun my/python-env--ruff ()
+  "Return the Ruff executable for the current buffer's file, or nil."
+  (when-let* ((dir (my/python-env--file-dir)))
+    (my/python-env-tool dir "ruff")))
+
+;;;; Ruff through Flymake
+
+(defvar-local my/python-env--ruff-process nil
+  "The Ruff process of the latest Flymake check in this buffer.")
+
+(defun my/python-env--ruff-position (location)
+  "Return the buffer position of a Ruff LOCATION.
+LOCATION is an alist with a 1-based `row' and `column'.  Ruff counts
+columns in characters, the same as Emacs."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- (alist-get 'row location)))
+    (min (+ (point) (alist-get 'column location) -1)
+         (line-end-position))))
+
+(defun my/python-env--ruff-diagnostic (check)
+  "Return a Flymake diagnostic for CHECK, an item of Ruff's JSON output.
+Call this function in the source buffer, without narrowing."
+  (let-alist check
+    (let ((beg (my/python-env--ruff-position .location))
+          (end (my/python-env--ruff-position .end_location)))
+      ;; Ruff gives some diagnostics an empty range, for example a missing
+      ;; newline at the end of the file.
+      (unless (< beg end)
+        (when-let* ((region (flymake-diag-region
+                             (current-buffer) .location.row .location.column)))
+          (setq beg (car region)
+                end (cdr region))))
+      (flymake-make-diagnostic
+       (current-buffer) beg end
+       ;; The same severities as python-lsp-ruff.
+       (if (or (null .code)
+               (equal .code "invalid-syntax")
+               (string-prefix-p "F" .code))
+           :error
+         :warning)
+       (list "ruff" .code .message)))))
+
+(defun my/python-env--ruff-report (process report-fn)
+  "Send the result of the finished Ruff PROCESS to Flymake's REPORT-FN.
+Call this function in the source buffer."
+  (let* ((output (with-current-buffer (process-buffer process)
+                   (buffer-string)))
+         ;; A vector, so that an empty result is not nil.
+         (checks (and (zerop (process-exit-status process))
+                      (ignore-error json-parse-error
+                        (json-parse-string output
+                                           :object-type 'alist
+                                           :null-object nil)))))
+    (save-restriction
+      (widen)
+      (funcall report-fn
+               (if checks
+                   (mapcar #'my/python-env--ruff-diagnostic checks)
+                 ;; Ruff failed, for example on an invalid config.  Show its
+                 ;; message on the first line.  The next check after the fix
+                 ;; removes it.
+                 (list (flymake-make-diagnostic
+                        (current-buffer)
+                        (point-min)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (line-end-position))
+                        :error
+                        (list "ruff" nil (string-trim output)))))))))
+
+(defun my/python-env-ruff-flymake (report-fn &rest _args)
+  "Check the current buffer with Ruff, and send the result to REPORT-FN.
+Ruff reads the buffer from stdin.  `--stdin-filename' gives Ruff the path
+of the buffer's file, so Ruff uses the config that applies to that file."
+  (let ((ruff (or (my/python-env--ruff)
+                  (error "Cannot find ruff")))
+        (source (current-buffer)))
+    (when (process-live-p my/python-env--ruff-process)
+      (kill-process my/python-env--ruff-process))
+    (setq my/python-env--ruff-process
+          (make-process
+           :name "ruff-flymake"
+           :buffer (generate-new-buffer " *ruff-flymake*")
+           :command (list ruff "check"
+                          "--output-format" "json"
+                          "--exit-zero" "--no-fix" "--no-cache"
+                          "--force-exclude" "--quiet"
+                          "--extend-select" "I"
+                          "--stdin-filename" buffer-file-name
+                          "-")
+           :connection-type 'pipe
+           :noquery t
+           :sentinel
+           (lambda (process _event)
+             (unless (process-live-p process)
+               (unwind-protect
+                   ;; Skip the result of a check that a newer check replaced.
+                   (when (and (buffer-live-p source)
+                              (eq process (buffer-local-value
+                                           'my/python-env--ruff-process
+                                           source)))
+                     (with-current-buffer source
+                       (my/python-env--ruff-report process report-fn)))
+                 (kill-buffer (process-buffer process)))))))
+    (save-restriction
+      (widen)
+      (process-send-region my/python-env--ruff-process (point-min) (point-max)))
+    (process-send-eof my/python-env--ruff-process)))
+
+(defun my/python-env--add-ruff-flymake ()
+  "Add the Ruff backend to Flymake in a local Python file that Eglot manages.
+Eglot replaces `flymake-diagnostic-functions' when it starts to manage
+a buffer, so this function runs from `eglot-managed-mode-hook'."
+  (when (and (eglot-managed-p)
+             (derived-mode-p 'python-base-mode)
+             (my/python-env--file-dir))
+    (add-hook 'flymake-diagnostic-functions #'my/python-env-ruff-flymake nil t)
+    ;; Eglot connects in the background, and then Flymake can start its first
+    ;; check before this hook adds Ruff.
+    (when (bound-and-true-p flymake-mode)
+      (flymake-start t))))
+
+;;;; Ruff through Apheleia
+
+(defconst my/python-env-apheleia-formatters
+  '((my/python-env-ruff-isort
+     . ((or (my/python-env--ruff) "ruff")
+        "check" "--select" "I" "--fix-only"
+        "--no-cache" "--force-exclude"
+        "--stdin-filename" filepath "-"))
+    (my/python-env-ruff-format
+     . ((or (my/python-env--ruff) "ruff")
+        "format"
+        "--no-cache" "--force-exclude"
+        "--stdin-filename" filepath "-")))
+  "Apheleia formatters that run the Ruff for the buffer's file.
+Apheleia evaluates the first element of each command in the buffer.
+Neither command sets `--line-length', so `fill-column' has no effect.
+Apheleia reads only stdout, and it logs stderr when a command fails.")
+
+(defun my/python-env-apheleia-setup ()
+  "Make Apheleia sort the imports with Ruff, then format with Ruff."
+  (dolist (formatter my/python-env-apheleia-formatters)
+    (setf (alist-get (car formatter) apheleia-formatters) (cdr formatter)))
+  (dolist (mode '(python-mode python-ts-mode))
+    (setf (alist-get mode apheleia-mode-alist)
+          '(my/python-env-ruff-isort my/python-env-ruff-format))))
+
 ;;;; Eglot integration
 
 (cl-defmethod project-root ((project (head my/python-env)))
@@ -145,7 +302,6 @@ Eglot binds `default-directory' to the server's project root before it
 calls this function."
   (let* ((dir default-directory)
          (venv (my/python-env-venv dir))
-         (ruff (my/python-env-tool dir "ruff"))
          (mypy (my/python-env-tool dir "mypy"))
          (off '(:enabled :json-false)))
     `(:pylsp
@@ -153,23 +309,21 @@ calls this function."
        (,@(when venv
             ;; Without a venv, Jedi uses the pylsp tool environment.
             `(:jedi (:environment ,(directory-file-name venv))))
-        :ruff ,(if ruff
-                   `(:enabled t
-                              :formatEnabled t
-                              :executable ,ruff
-                              ;; Let `eglot-format-buffer' apply Ruff's import
-                              ;; sorter too.
-                              :extendSelect ["I"]
-                              :format ["I"])
-                 off)
+        ;; Flymake and Apheleia run Ruff for each buffer instead.
+        :ruff ,off
         ;; Check on save only: live mode writes a shadow file on each change.
         ;; Match mypy's default `follow-imports' instead of pylsp-mypy's
         ;; `silent'.  mypy stores its options in `.mypy_cache', so a mismatch
         ;; makes CLI runs and editor runs invalidate each other's cache.
+        ;;
+        ;; Without dmypy, `hover' runs no mypy.  It selects a Jedi hover that
+        ;; starts with the class of the value at point.  See the README for
+        ;; why dmypy is off.
         :pylsp_mypy ,(if mypy
                          `(:enabled t
                                     :live_mode :json-false
                                     :dmypy :json-false
+                                    :hover t
                                     :follow-imports "normal"
                                     :report_progress t
                                     :mypy_command ,(vector mypy))
@@ -204,7 +358,8 @@ calls this function."
   (setq-default eglot-workspace-configuration
                 #'my/python-env-workspace-configuration)
   (add-to-list 'eglot-server-programs
-               '((python-mode python-ts-mode) . my/python-env-server-contact)))
+               '((python-mode python-ts-mode) . my/python-env-server-contact))
+  (add-hook 'eglot-managed-mode-hook #'my/python-env--add-ruff-flymake))
 
 ;;;; Commands
 
