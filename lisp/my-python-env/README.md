@@ -1,31 +1,22 @@
 # my-python-env
 
-`my-python-env` sets up Eglot, pylsp, Flymake, and Apheleia for each Python file. It uses the tools of the nearest venv above the file:
+`my-python-env` sets up Eglot, pyrefly, Flymake, and Apheleia for each Python file. It uses the tools of the nearest venv above the file:
 
 | Feature | Runs through | Source | Fallback |
 | --- | --- | --- | --- |
-| Jedi (xref, completion, hover) | pylsp | Nearest venv | pylsp tool environment |
-| Ruff lint | Flymake | Nearest venv with `bin/ruff` | `ruff` in the pylsp tool environment |
-| Ruff import sort and format on save | Apheleia | Nearest venv with `bin/ruff` | `ruff` in the pylsp tool environment |
-| Mypy (type check) | pylsp-mypy | Nearest venv with `bin/mypy` | `mypy` in the pylsp tool environment |
+| Type check, hover, xref, completion | pyrefly through Eglot | Nearest venv with `bin/pyrefly` | `pyrefly` on PATH |
+| Ruff lint | Flymake | Nearest venv with `bin/ruff` | `ruff` on PATH |
+| Ruff import sort and format on save | Apheleia | Nearest venv with `bin/ruff` | `ruff` on PATH |
 
-A directory counts as a venv when it is named `.venv` or `venv` and contains `pyvenv.cfg`. The last fallback for each tool is `exec-path`.
+A directory counts as a venv when it is named `.venv` or `venv` and contains `pyvenv.cfg`. The fallback for each tool is `exec-path`, which holds the directories in PATH. `uv tool install` links each tool into `~/.local/bin`, on PATH.
 
 The package starts Eglot only for buffers that visit a local file. Special buffers (`*scratch*`, dired, org-src edit buffers) and remote files do not start Eglot.
 
 ## Requirements
 
-Install pylsp, its mypy plugin, and Ruff in one uv tool environment:
-
-```sh
-uv tool install python-lsp-server --with pylsp-mypy --with ruff
-```
-
-- uv links only `pylsp` into `~/.local/bin`.
-- `ruff` and `mypy` stay in the tool environment's `bin/` directory, off PATH. The package finds them through `my/python-env-fallback-bin`.
-- `uv tool upgrade python-lsp-server` upgrades all packages together.
-- To also get `ruff` and `mypy` in the shell, add `--with-executables-from ruff,mypy`.
-- An older install with `--with python-lsp-ruff` also works. The package turns that plugin off, and its `ruff` dependency is the fallback.
+- pyrefly in the project's venv. In ds-monorepo, the root `.venv` of each worktree has it.
+- For a file with no venv pyrefly above it, a `pyrefly` on PATH. `uv tool install pyrefly` puts one there. Without it, see [Files without pyrefly](#files-without-pyrefly).
+- For a file with no venv Ruff above it, a `ruff` on PATH. `uv tool install ruff` puts one there. Without it, Flymake turns off the Ruff backend for the file, and Apheleia does not format the file.
 
 `use-package` installs Apheleia from MELPA.
 
@@ -40,16 +31,16 @@ uv tool install python-lsp-server --with pylsp-mypy --with ruff
              my/python-env-reload
              my/python-env-describe)
   :hook ((python-mode . my/python-eglot-ensure)
-         (python-ts-mode . my/python-eglot-ensure)))
+         (python-ts-mode . my/python-eglot-ensure))
+  ;; The package loads Eglot.
+  :config
+  (my/python-env-setup))
 
 (use-package eglot
   :ensure nil
   :commands (eglot-ensure
              eglot-rename
-             eglot-format-buffer)
-  :config
-  (require 'my-python-env)
-  (my/python-env-setup))
+             eglot-format-buffer))
 
 (use-package apheleia
   :commands (apheleia-mode
@@ -61,12 +52,14 @@ uv tool install python-lsp-server --with pylsp-mypy --with ruff
   (my/python-env-apheleia-setup))
 ```
 
+The package requires Eglot, because it defines a subclass of Eglot's server class. Thus the `eglot` form must not require the package: when the package loads first, that `require` would load the package again.
+
 ## Commands
 
-- `my/python-env-describe`: show the venv, Ruff, Mypy, pylsp, and Eglot root for the current buffer.
-- `my/python-env-reload`: clear the cache and restart the pylsp servers for all Python file buffers. Use it after these changes:
+- `my/python-env-describe`: show the pyrefly, Ruff, and Eglot root for the current buffer.
+- `my/python-env-reload`: clear the cache and restart the pyrefly servers for all Python file buffers. Use it after these changes:
   - You create or delete a venv.
-  - You add a mypy config file where there was none.
+  - You install pyrefly in a venv, or remove it.
   - You change the settings in `my-python-env.el`.
 
   Buffers other than the current one reconnect the next time you use them.
@@ -76,31 +69,76 @@ uv tool install python-lsp-server --with pylsp-mypy --with ruff
 ## Options
 
 - `my/python-env-venv-names`: the venv directory names to check, in order. Default: `(".venv" "venv")`.
-- `my/python-env-fallback-bin`: the `bin/` directory of the pylsp tool environment. The default follows the uv rules: `$UV_TOOL_DIR`, else `$XDG_DATA_HOME/uv/tools`, else `~/.local/share/uv/tools`, then `python-lsp-server/bin`.
-  - GUI Emacs gets only PATH and the variables in `exec-path-from-shell-variables` from the shell. If you set `UV_TOOL_DIR` in the shell, add it to that list too.
+- `my/python-env-pyrefly-arguments`: the arguments after `pyrefly lsp`. Default: `("--workspace-indexing-limit" "0")`. See [Workspace index](#workspace-index).
+- `my/python-env-pyrefly-ignored-codes`: the codes of the pyrefly diagnostics that Eglot does not show. Default: `("unused-import" "unused-variable")`. See [Diagnostics](#diagnostics).
 
 ## How it works
 
-### pylsp servers
+### pyrefly servers
 
-pylsp settings apply to a whole workspace, not to one file. Eglot starts one server for each `project.el` project. Thus the package changes what "project" means for Eglot only:
+Eglot starts one server for each `project.el` project. Thus the package changes what "project" means for Eglot only:
 
 1. Eglot binds `eglot-lsp-context` to `t` while it looks up the project for a buffer.
-2. `my/python-env-project-find` runs before `project-try-vc` in `project-find-functions`. In the Eglot context, it returns a project rooted at the directory that holds the nearest venv.
+2. `my/python-env-project-find` runs before `project-try-vc` in `project-find-functions`. In the Eglot context, it returns a project rooted at the directory that holds the nearest venv with `bin/pyrefly`.
 3. Other lookups (`C-x p`, consult, etc.) keep the normal VC project.
-4. Eglot computes the workspace configuration with `default-directory` set to the server root. `my/python-env-workspace-configuration` builds the pylsp settings for that root.
+4. `my/python-env-server-contact` starts the pyrefly that a lookup from the root finds. No venv between a file and its root has pyrefly, so this is the pyrefly of each file under the root.
 
-Each venv root gets its own pylsp process. All files under a root have the same ancestor directories. Thus a lookup from the root gives the same Mypy result as a lookup from each file under it.
+pyrefly chooses the config and the interpreter for each file itself. The `pyrefly` CLI does the same for `pyrefly check FILE`:
 
-Example from ds-monorepo: `libs/termtool/.venv` has `mypy` but no `ruff`, and the worktree root `.venv` has both. A file in `libs/termtool/` gets a server rooted at `libs/termtool/`. The server uses the termtool venv for Jedi and Mypy. Ruff for that file comes from the root venv.
+- **Config:** the nearest `pyrefly.toml`, or `pyproject.toml` with `[tool.pyrefly]`, above the file. A `pyproject.toml` without that table does not stop the search when a config is above it.
+- **Interpreter:** the config's `python-interpreter-path`. Without it, the nearest `.venv`, `venv`, or `env` above the project root, then `python3` on PATH.
+
+`pyrefly dump-config FILE` shows both for a file.
+
+Example from ds-monorepo: the worktree's root `.venv` has pyrefly, and the project venvs do not. Thus each worktree gets one pyrefly server, rooted at the worktree. A file in `libs/core/` uses `libs/core/pyproject.toml` and `libs/core/.venv/bin/python`. A file in `libs/datavant/` uses the datavant config and venv in the same server.
+
+One server for the worktree has these results:
+
+- A jump to a file in another lib stays in the same server.
+- Find references covers the files of each config that the server has loaded.
+- Only one pyrefly process runs for each worktree.
 
 A cache keyed by directory stores venv and tool lookups. The cache also stores "not found" results. `my/python-env-reload` clears it.
 
-If a directory has no venv above it, the normal VC project applies. The tools then come from the fallback directory.
+If a directory has no venv with pyrefly above it, the normal VC project applies, or the file's directory when no VC project applies. pyrefly then comes from PATH.
+
+### File watches
+
+pyrefly asks Eglot to watch the Python files and config files under the server root, and then under each config directory, search path, and site-packages directory. Eglot gets the directories to watch from `project-files`.
+
+The package gives its projects a `project-files` method that uses the VC project. Thus Eglot does not watch directories that Git ignores, such as venvs and their site-packages. The generic method also lists the files in each venv. In ds-monorepo, it walked about 127,000 directories, blocked Emacs for 2 minutes, and then ran out of file descriptors.
+
+With the VC method, the first request blocks Emacs for about 1 second at server start in ds-monorepo. It watches about 2,000 directories that Git does not ignore. Then pyrefly replaces that request with one for its configs, which used 15 watches for `libs/core`.
+
+### Workspace index
+
+By default, pyrefly indexes up to 2000 files of the workspace, in addition to the files of each config that it loads. The workspace is the server root. In ds-monorepo, that is the whole worktree, so the index took 2000 files from many projects.
+
+| Server for `libs/core/src/thds/core/files.py` | Memory |
+| --- | --- |
+| Default index | 2.5 GB |
+| `--workspace-indexing-limit 0` | 150 MB |
+| `--workspace-indexing-limit 0`, with the core, datavant, and root configs loaded | 250 MB |
+
+Without the workspace index, find references still covers the files of each loaded config. A project without a pyrefly config has no config index. In a test project without a config, find references did not find a use in a file that was not open. With the default index, it found that use. `pyrefly init` writes a config for a project.
+
+### Diagnostics
+
+Eglot shows pyrefly's severities as Flymake types:
+
+| pyrefly | Flymake |
+| --- | --- |
+| `error` | error |
+| `warn` | warning |
+| `info`, and an error in the config's `baseline` file | note |
+
+`pyrefly check` with no file arguments uses one config for the whole project. It also hides warnings, info, and baseline errors. To see the same diagnostics as Emacs, run `pyrefly check FILE --min-severity info --baseline-error-level info`.
+
+pyrefly also sends three diagnostics that only an editor gets: `unused-import`, `unused-variable`, and `unused-parameter`. Ruff reports the first two as F401 and F841, so the package drops them. A pyrefly config cannot turn them off. The package uses its own server class, `my/python-env-pyrefly-server`, to drop them. `unused-parameter` stays, because the Ruff config in ds-monorepo does not select the `ARG` rules.
 
 ### Ruff
 
-Ruff runs outside pylsp. Each Ruff run looks up `ruff` from the directory of the buffer's file, not from the server root. Each run reads the buffer from stdin, and `--stdin-filename` gives Ruff the path of the file.
+Ruff runs outside pyrefly. Each Ruff run looks up `ruff` from the directory of the buffer's file, not from the server root. Each run reads the buffer from stdin, and `--stdin-filename` gives Ruff the path of the file.
 
 - **Lint:** `my/python-env-ruff-flymake` is a Flymake backend. It runs `ruff check --output-format json` asynchronously. A new check stops the check before it.
   - Eglot replaces `flymake-diagnostic-functions` in each buffer that it manages. Thus `eglot-managed-mode-hook` adds the Ruff backend beside `eglot-flymake-backend`, and then starts Flymake again.
@@ -112,14 +150,7 @@ Ruff runs outside pylsp. Each Ruff run looks up `ruff` from the directory of the
 
   Apheleia evaluates the first element of each command in the buffer, so each formatter uses the Ruff for that file.
 
-## pylsp settings
-
-- **Jedi:** `environment` is the nearest venv. Without a venv, Jedi uses the pylsp tool environment.
-- **Ruff (python-lsp-ruff):** off.
-- **Mypy (pylsp-mypy):** runs on save only (`live_mode` off). No daemon (`dmypy` off). `hover` is on. `mypy_command` is the resolved mypy. `follow-imports` is `normal`.
-- **Off:** Pylint, Flake8, pyflakes, pycodestyle, mccabe, pydocstyle, isort, autopep8, and yapf. Ruff covers them.
-
-A `.dir-locals.el` value for `eglot-workspace-configuration` replaces these settings for that directory.
+pyrefly has no formatter, so it does not change the buffer.
 
 ## Project config
 
@@ -134,20 +165,12 @@ Put lint, format, and type-check policy in each project's `pyproject.toml`.
 - Lint and format pass `--force-exclude`, so Ruff skips the files that a project's `exclude` lists.
 - Neither command sets `--line-length`, so `fill-column` has no effect. The line length comes from the project's config.
 
-### Mypy
+### pyrefly
 
-- pylsp-mypy searches upward from the server root for the first `mypy.ini`, `.mypy.ini`, `pyproject.toml` with `[tool.mypy]`, or `setup.cfg` with `[mypy]`. It passes that file with `--config-file`.
-- mypy resolves relative paths in the config (for example `mypy_path = "src"`) from its working directory. That is the server root, the same as a CLI run from the project directory.
-- The config is chosen for each server, not for each file. A package without its own venv joins the server of the parent venv, so its own mypy config does not apply.
-- pylsp-mypy finds the config file one time, at server start. Edits to that file apply on the next save.
-
-### Why `follow-imports` is `normal`
-
-pylsp-mypy passes only the current file to a new mypy process on each save. By default, it adds `--follow-imports silent` to hide errors in imported modules.
-
-mypy saves its options in `.mypy_cache`. A CLI run with the mypy default `normal` and an editor run with `silent` make each other discard the cache. Thus the package sets `normal`, the same as the CLI.
-
-The cost: mypy also reports errors in imported modules. pylsp-mypy discards them and logs a warning for each one.
+- Each file uses its nearest config, as [pyrefly servers](#pyrefly-servers) says.
+- pyrefly resolves relative paths in the config, such as `python-interpreter-path` and `search-path`, from the config's directory.
+- pyrefly asks Eglot to watch `pyrefly.toml`, `pyproject.toml`, and `uv.lock` in each config directory.
+- A file without a config gets the `basic` preset. If a `[tool.mypy]` or pyright config is above the file, pyrefly translates it in memory and uses that instead.
 
 ## Formatting
 
@@ -157,7 +180,7 @@ Apheleia formats the buffer when you save it. Apheleia keeps point in place, and
 - If you edit the buffer while Ruff runs, Apheleia discards Ruff's result.
 - If Ruff fails, for example on a syntax error, Apheleia does not change the buffer. Apheleia writes Ruff's error to `*apheleia-ruff-log*`.
 - `M-x apheleia-format-buffer` formats without a save.
-- `eglot-format-buffer` no longer formats Python, because pylsp has no formatter turned on.
+- `eglot-format-buffer` does not format Python, because pyrefly has no formatter.
 
 ### Undo
 
@@ -167,34 +190,39 @@ Apheleia formats the buffer when you save it. Apheleia keeps point in place, and
 
 ## Hover
 
-Jedi writes the hover text. mypy has no part in it.
+pyrefly writes the hover text in Markdown. Eglot renders it with `gfm-view-mode` from markdown-mode.
 
-- **Functions:** the hover shows the signature with its annotations, for example `greet(name: str, times: int = 1) -> list[str]`.
-- **Values:** the hover starts with the class of the value, then the docstring of that class. Jedi gives the class, but not its type parameters: `list`, not `list[str]`.
-- **Echo area:** it shows the first line of the hover. Press `C-h .` (`eldoc-doc-buffer`) to see the full hover.
+- **Values:** the hover shows the full type, for example `(variable) names: list[str]`.
+- **Functions:** the hover shows the signature with its annotations, then the docstring.
+- **Links:** "Go to" links point to the type's definition. For a standard library type, the link goes to pyrefly's copy of typeshed in the system temp directory.
+- **Echo area:** it shows the first visible line of the hover. Press `C-h .` (`eldoc-doc-buffer`) to see the full hover.
 
-pylsp-mypy's `hover` setting gives the class line. Without `dmypy`, that setting runs no mypy. It replaces pylsp's normal hover with a different Jedi hover. pylsp's normal hover shows only the docstring of the class. In one test, it also showed the docstring of `list` for a `str` parameter.
+## Inlay hints
 
-### Why `dmypy` is off
+Eglot turns on `eglot-inlay-hints-mode` when the server supports it. pyrefly shows the inferred type after the name in an assignment without an annotation, for example `project_root: Path`.
 
-With `dmypy`, the hover also shows the mypy type, for example `Mypy type: list[str]`. A test in ds-monorepo on 2026-10-25 showed these problems:
+- `M-x eglot-inlay-hints-mode` turns the hints off in one buffer.
+- To turn them off for all servers, add `:inlayHintProvider` to `eglot-ignored-server-capabilities`.
 
-- In `libs/unified-directory` (mypy 1.11.2), the daemon crashed on every second check of a file, also after an edit: `RuntimeError: Max number of iterations (1000) reached`.
-- The daemon does not read `.mypy_cache`. Thus each new pylsp server starts with a full check: 5 to 12 seconds in the larger projects.
-- pylsp-mypy gives the daemon only the current file. After a save of another file, a return to the first file costs a new check, which took 4 seconds. Plain mypy with a warm `.mypy_cache` took less than 2 seconds in each project.
-- `dmypy inspect` knows only the file of the last check. pylsp-mypy 0.8.0 also sends it a 0-based column, so no type shows on the first character of a name.
-- When no daemon runs, pylsp-mypy 0.8.0 starts one with a bare `dmypy` from PATH.
-- Eglot does not shut down its servers when Emacs exits, so each daemon keeps running after the exit.
+## Files without pyrefly
+
+If no venv above a file has pyrefly, and PATH has no `pyrefly`, Eglot does not start for the file. Eglot shows the warning `Cannot find pyrefly for DIR`.
+
+- Eglot turns on Flymake. Without Eglot, the file gets no Flymake checks, so Ruff does not lint the file.
+- Apheleia still formats the file on save with Ruff.
+- A jump into the standard library opens pyrefly's typeshed copy in the system temp directory. No venv is above that file, so the same rules apply.
+- `eglot-extend-to-xref` does not help here. The upstream `init.el` sets `find-file-visit-truename`, so the buffer visits `/private/var/...`, but Eglot records the path as `/var/...`.
+
+With a `pyrefly` on PATH, each such file gets a server rooted at its VC project or directory, with the `basic` preset or a translated mypy config.
 
 ## Caveats
 
-- **Security:** pylsp-mypy honors `mypy_command` only when `PYLSP_MYPY_ALLOW_DANGEROUS_CODE_EXECUTION` is set, so the server command sets it. The variable also lets a project's `[tool.pylsp-mypy]` table choose the mypy command. The venv's own `ruff` and `mypy` also run from the project. Open only projects that you trust.
-- **Old mypy results:** mypy runs only on save. On other changes, pylsp-mypy sends the last results again, while Ruff runs again. A mypy `[syntax]` error from a save in the middle of an edit stays until the next save.
-- **Python version:** mypy parses for the Python version of its interpreter, unless the config sets `python_version`. Newer syntax causes a mypy `[syntax]` error in an older venv.
-- **Standard library files:** these files have no venv above them. A jump into one starts a separate pylsp server with the fallback tools.
+- **Security:** pyrefly runs the interpreter from the config or the venv to find its search paths. The venv's own `pyrefly` and `ruff` also run from the project. Open only projects that you trust.
+- **Python version:** pyrefly checks for the Python version of the file's interpreter, unless the config sets `python-version`. For example, `import tomllib` is an error in a Python 3.10 venv.
 
 ## Testing
 
 - In a Python buffer, run `my/python-env-describe` to see the resolved tools.
 - Run `M-x flymake-running-backends` to see `my/python-env-ruff-flymake` beside `eglot-flymake-backend`. Flymake writes backend errors to `*Flymake log*`.
-- In `M-x eglot-events-buffer`, look at `workspace/didChangeConfiguration` for the settings that Eglot sent. The upstream `init.el` turns off the event log unless Emacs starts with `--debug-init`.
+- Run `pyrefly dump-config FILE` to see the config and interpreter that pyrefly uses for a file.
+- In `M-x eglot-events-buffer`, look at `client/registerCapability` for the watched files, and at `textDocument/publishDiagnostics` for all diagnostics before the package drops some. The upstream `init.el` turns off the event log unless Emacs starts with `--debug-init`.

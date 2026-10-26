@@ -1,21 +1,22 @@
 ;;; my-python-env.el --- Per-directory Python tool resolution for Eglot -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Choose the Python environment and tools for each file-visiting Python
-;; buffer from the venvs above it on the filesystem:
+;; Choose the Python tools for each file-visiting Python buffer from the
+;; venvs above it on the filesystem:
 ;;
-;; - Jedi (xref, completion) uses the nearest venv.
-;; - Ruff uses the nearest venv that provides `bin/ruff'.
-;; - Mypy uses the nearest venv that provides `bin/mypy'.
+;; - pyrefly (the language server) comes from the nearest venv that provides
+;;   `bin/pyrefly'.
+;; - Ruff comes from the nearest venv that provides `bin/ruff'.
 ;;
-;; Each lookup falls back to the central uv tool environment for pylsp, and
-;; then to `exec-path'.
+;; Each lookup falls back to `exec-path', where `uv tool install' links
+;; each tool.
 ;;
-;; pylsp settings apply to a whole workspace, so Eglot starts one pylsp server
-;; for each directory that holds a venv.  Only Eglot sees these projects; the
-;; normal VC project still applies to `project.el' commands.
+;; Eglot starts one pyrefly server for each directory that holds a venv with
+;; pyrefly.  pyrefly finds the config and the interpreter for each file
+;; itself.  Only Eglot sees these projects; the normal VC project still
+;; applies to `project.el' commands.
 ;;
-;; Ruff runs outside pylsp: a Flymake backend lints the buffer, and Apheleia
+;; Ruff runs outside pyrefly: a Flymake backend lints the buffer, and Apheleia
 ;; formatters sort the imports and format the buffer on save.  Each Ruff run
 ;; looks up the tool from the directory of the buffer's file.
 ;;
@@ -26,17 +27,13 @@
 
 ;;; Code:
 
+(require 'eglot)
 (require 'flymake)
 (require 'project)
 (require 'seq)
 
 (defvar apheleia-formatters)
 (defvar apheleia-mode-alist)
-(defvar eglot-lsp-context)
-(defvar eglot-server-programs)
-(declare-function eglot-current-server "eglot")
-(declare-function eglot-managed-p "eglot")
-(declare-function eglot-shutdown "eglot")
 
 (defgroup my/python-env nil
   "Per-directory Python tool resolution for Eglot."
@@ -47,17 +44,20 @@
 A candidate counts as a venv only when it contains `pyvenv.cfg'."
   :type '(repeat string))
 
-(defcustom my/python-env-fallback-bin
-  ;; Mirror uv's tool directory rules without running `uv tool dir' at startup.
-  (expand-file-name
-   "python-lsp-server/bin"
-   (or (getenv "UV_TOOL_DIR")
-       (expand-file-name "uv/tools"
-                         (or (getenv "XDG_DATA_HOME") "~/.local/share"))))
-  "The `bin' directory of the central uv tool environment for pylsp.
-Ruff and Mypy in this directory are the fallbacks when no venv provides
-them, although uv does not link them onto PATH."
-  :type 'directory)
+(defcustom my/python-env-pyrefly-arguments '("--workspace-indexing-limit" "0")
+  "Arguments for `pyrefly lsp'.
+By default, pyrefly indexes up to 2000 files of the workspace, in
+addition to the files of each config that it loads.  The workspace is
+the Eglot root, which in ds-monorepo is the whole worktree.  There, that
+index used 2.5 GB of memory, and the server used 150 MB without it."
+  :type '(repeat string))
+
+(defcustom my/python-env-pyrefly-ignored-codes '("unused-import" "unused-variable")
+  "Codes of the pyrefly diagnostics that Eglot does not show.
+Ruff reports the same problems as F401 and F841.  pyrefly sends these
+diagnostics as hints in the editor only, and its config cannot turn
+them off."
+  :type '(repeat string))
 
 (defvar my/python-env--cache (make-hash-table :test #'equal)
   "Resolved venvs and tools, keyed by (DIRECTORY . KIND).
@@ -99,24 +99,25 @@ DIR does not need to exist, so new files resolve too."
              (setq current (unless (equal parent current) parent))))
          (nreverse venvs))))))
 
-(defun my/python-env-venv (dir)
-  "Return the nearest venv directory for DIR, or nil."
-  (car (my/python-env--venvs dir)))
+(defun my/python-env--venv-tool (venv tool)
+  "Return the executable for TOOL in VENV, or nil."
+  (my/python-env--executable
+   (expand-file-name tool (expand-file-name "bin" venv))))
+
+(defun my/python-env--tool-venv (dir tool)
+  "Return the nearest venv directory for DIR that provides TOOL, or nil."
+  (seq-find (lambda (venv) (my/python-env--venv-tool venv tool))
+            (my/python-env--venvs dir)))
 
 (defun my/python-env-tool (dir tool)
   "Return the executable for TOOL that applies to DIR, or nil.
-Use the nearest venv that provides TOOL, then `my/python-env-fallback-bin',
-then `exec-path'."
+Use the nearest venv that provides TOOL, then `exec-path'."
   (let ((dir (my/python-env--normalize dir)))
     (my/python-env--cached
      dir tool
      (lambda ()
-       (or (seq-some (lambda (venv)
-                       (my/python-env--executable
-                        (expand-file-name tool (expand-file-name "bin" venv))))
-                     (my/python-env--venvs dir))
-           (my/python-env--executable
-            (expand-file-name tool my/python-env-fallback-bin))
+       (or (when-let* ((venv (my/python-env--tool-venv dir tool)))
+             (my/python-env--venv-tool venv tool))
            (executable-find tool))))))
 
 (defun my/python-env--file-dir ()
@@ -125,12 +126,6 @@ Return nil for special buffers and remote files."
   (when (and buffer-file-name
              (not (file-remote-p buffer-file-name)))
     (file-name-directory buffer-file-name)))
-
-(defun my/python-env--pylsp ()
-  "Return the pylsp executable, or nil."
-  (or (my/python-env--executable
-       (expand-file-name "pylsp" my/python-env-fallback-bin))
-      (executable-find "pylsp")))
 
 (defun my/python-env--ruff ()
   "Return the Ruff executable for the current buffer's file, or nil."
@@ -286,77 +281,59 @@ Apheleia reads only stdout, and it logs stderr when a command fails.")
 (cl-defmethod project-root ((project (head my/python-env)))
   (cdr project))
 
+(cl-defmethod project-files ((project (head my/python-env)) &optional dirs)
+  "List the files of PROJECT in DIRS that version control does not ignore.
+Eglot watches the directories of these files for pyrefly.  The generic
+method also lists the files in each venv, and in ds-monorepo it walked
+about 127,000 directories."
+  (if-let* ((root (project-root project))
+            (vc (project-try-vc root)))
+      (project-files vc (or dirs (list root)))
+    (cl-call-next-method)))
+
 (defun my/python-env-project-find (dir)
-  "Return an Eglot project rooted at the directory of DIR's nearest venv.
+  "Return an Eglot project rooted at the directory of DIR's pyrefly venv.
+That venv is the nearest venv above DIR that provides `bin/pyrefly'.
 Apply only while Eglot looks up a project for a local Python file, so
 other `project.el' commands keep the normal VC project."
   (when (and (bound-and-true-p eglot-lsp-context)
              (derived-mode-p 'python-base-mode)
              (my/python-env--file-dir))
-    (when-let* ((venv (my/python-env-venv dir)))
+    (when-let* ((venv (my/python-env--tool-venv dir "pyrefly")))
       (cons 'my/python-env (file-name-directory (directory-file-name venv))))))
 
-(defun my/python-env-workspace-configuration (_server)
-  "Return pylsp settings for the server root in `default-directory'.
-Eglot binds `default-directory' to the server's project root before it
-calls this function."
-  (let* ((dir default-directory)
-         (venv (my/python-env-venv dir))
-         (mypy (my/python-env-tool dir "mypy"))
-         (off '(:enabled :json-false)))
-    `(:pylsp
-      (:plugins
-       (,@(when venv
-            ;; Without a venv, Jedi uses the pylsp tool environment.
-            `(:jedi (:environment ,(directory-file-name venv))))
-        ;; Flymake and Apheleia run Ruff for each buffer instead.
-        :ruff ,off
-        ;; Check on save only: live mode writes a shadow file on each change.
-        ;; Match mypy's default `follow-imports' instead of pylsp-mypy's
-        ;; `silent'.  mypy stores its options in `.mypy_cache', so a mismatch
-        ;; makes CLI runs and editor runs invalidate each other's cache.
-        ;;
-        ;; Without dmypy, `hover' runs no mypy.  It selects a Jedi hover that
-        ;; starts with the class of the value at point.  See the README for
-        ;; why dmypy is off.
-        :pylsp_mypy ,(if mypy
-                         `(:enabled t
-                                    :live_mode :json-false
-                                    :dmypy :json-false
-                                    :hover t
-                                    :follow-imports "normal"
-                                    :report_progress t
-                                    :mypy_command ,(vector mypy))
-                       off)
-        ;; Ruff covers these providers.  Keeping them off avoids duplicate
-        ;; diagnostics and formatters.
-        :pylint ,off
-        :flake8 ,off
-        :pyflakes ,off
-        :pycodestyle ,off
-        :mccabe ,off
-        :pydocstyle ,off
-        :isort ,off
-        :autopep8 ,off
-        :yapf ,off)))))
+(defclass my/python-env-pyrefly-server (eglot-lsp-server) ()
+  :documentation "An Eglot connection to pyrefly.")
 
-(defun my/python-env-server-contact (_interactive)
-  "Return the command that starts pylsp for Eglot."
-  (let ((pylsp (my/python-env--pylsp)))
-    (unless pylsp
-      (user-error "Cannot find pylsp; run `uv tool install python-lsp-server'"))
-    ;; pylsp-mypy honors `mypy_command' only with this variable set.  The
-    ;; variable also lets a project's [tool.pylsp-mypy] table choose the
-    ;; command.  That adds little risk here, because the venv's own ruff and
-    ;; mypy already run from the project.  Open only trusted projects.
-    (list "env" "PYLSP_MYPY_ALLOW_DANGEROUS_CODE_EXECUTION=1" pylsp)))
+(cl-defmethod eglot-handle-notification :around
+  ((server my/python-env-pyrefly-server)
+   (method (eql textDocument/publishDiagnostics))
+   &rest args &key diagnostics &allow-other-keys)
+  "Drop the DIAGNOSTICS that `my/python-env-pyrefly-ignored-codes' lists."
+  ;; The first :diagnostics in a plist wins.
+  (apply #'cl-call-next-method server method
+         :diagnostics (cl-remove-if
+                       (lambda (diagnostic)
+                         (member (plist-get diagnostic :code)
+                                 my/python-env-pyrefly-ignored-codes))
+                       diagnostics)
+         args))
+
+(defun my/python-env-server-contact (_interactive project)
+  "Return the server class and the command that start pyrefly in PROJECT.
+A lookup from the project root finds the same pyrefly as a lookup from
+each file under it: no venv between a file and the root provides
+pyrefly, or `my/python-env-project-find' would choose that venv."
+  (let ((root (project-root project)))
+    `(my/python-env-pyrefly-server
+      ,(or (my/python-env-tool root "pyrefly")
+           (user-error "Cannot find pyrefly for %s" root))
+      "lsp" ,@my/python-env-pyrefly-arguments)))
 
 (defun my/python-env-setup ()
-  "Install the per-venv project, settings, and server command for Eglot."
+  "Install the per-venv project and the server command for Eglot."
   ;; Run before `project-try-vc', which would otherwise claim the buffer.
   (add-hook 'project-find-functions #'my/python-env-project-find -90)
-  (setq-default eglot-workspace-configuration
-                #'my/python-env-workspace-configuration)
   (add-to-list 'eglot-server-programs
                '((python-mode python-ts-mode) . my/python-env-server-contact))
   (add-hook 'eglot-managed-mode-hook #'my/python-env--add-ruff-flymake))
@@ -395,22 +372,20 @@ one reconnect the next time you use them."
     (dolist (buffer buffers)
       (with-current-buffer buffer
         (my/python-eglot-ensure)))
-    (message "Restarted %d pylsp server(s) for %d buffer(s)"
+    (message "Restarted %d pyrefly server(s) for %d buffer(s)"
              (length servers) (length buffers))))
 
 (defun my/python-env-describe ()
-  "Show the venv, tools, and Eglot root for the current buffer."
+  "Show the tools and Eglot root for the current buffer."
   (interactive)
   (let* ((dir (or (my/python-env--file-dir)
                   (user-error "This buffer does not visit a local file")))
          (root (let ((eglot-lsp-context t))
                  (when-let* ((project (project-current nil dir)))
                    (project-root project)))))
-    (message "venv: %s\nruff: %s\nmypy: %s\npylsp: %s\nEglot root: %s"
-             (or (my/python-env-venv dir) "none")
+    (message "pyrefly: %s\nruff: %s\nEglot root: %s"
+             (or (my/python-env-tool dir "pyrefly") "none")
              (or (my/python-env-tool dir "ruff") "none")
-             (or (my/python-env-tool dir "mypy") "none")
-             (or (my/python-env--pylsp) "none")
              (or root default-directory))))
 
 (provide 'my-python-env)

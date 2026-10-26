@@ -1054,8 +1054,8 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   :commands org-appear-mode
   :hook (org-mode . org-appear-mode))
 
-;; Resolve the venv, Ruff, and Mypy for each Python file from the venvs above
-;; it.  Project-specific lint, format, and type-check policy belongs in
+;; Resolve pyrefly and Ruff for each Python file from the venvs above it.
+;; Project-specific lint, format, and type-check policy belongs in
 ;; pyproject.toml.  See lisp/my-python-env/README.md.
 ;;
 ;; Each personal package lives in its own directory under lisp/.
@@ -1071,17 +1071,17 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
              my/python-env-reload
              my/python-env-describe)
   :hook ((python-mode . my/python-eglot-ensure)
-         (python-ts-mode . my/python-eglot-ensure)))
+         (python-ts-mode . my/python-eglot-ensure))
+  ;; The package loads Eglot.
+  :config
+  (my/python-env-setup))
 
 ;; Set up the Language Server Protocol (LSP) servers using Eglot.
 (use-package eglot
   :ensure nil
   :commands (eglot-ensure
              eglot-rename
-             eglot-format-buffer)
-  :config
-  (require 'my-python-env)
-  (my/python-env-setup))
+             eglot-format-buffer))
 
 ;; Apheleia runs code formatters on save, asynchronously, without moving
 ;; point.  Only Python buffers use it here: Ruff sorts the imports, and then
