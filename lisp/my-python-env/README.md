@@ -142,7 +142,7 @@ Ruff runs outside pyrefly. Each Ruff run looks up `ruff` from the directory of t
 
 - **Lint:** `my/python-env-ruff-flymake` is a Flymake backend. It runs `ruff check --output-format json` asynchronously. A new check stops the check before it.
   - Eglot replaces `flymake-diagnostic-functions` in each buffer that it manages. Thus `eglot-managed-mode-hook` adds the Ruff backend beside `eglot-flymake-backend`, and then starts Flymake again.
-  - Syntax errors and Pyflakes (`F`) rules are errors. All other rules are warnings. These are the same severities as python-lsp-ruff.
+  - Syntax errors and Pyflakes (`F`) rules are errors. All other rules are warnings. Ruff's JSON output has no severity, so the package sets one. Pyflakes rules find likely bugs, and most other rules are about style.
   - If Ruff fails, for example on an invalid config, its message shows as an error on the first line. The next check after the fix removes it.
 - **Format:** Apheleia runs two formatters on save, in this order:
   1. `my/python-env-ruff-isort`: `ruff check --select I --fix-only`, which sorts the imports.

@@ -162,7 +162,8 @@ Call this function in the source buffer, without narrowing."
                 end (cdr region))))
       (flymake-make-diagnostic
        (current-buffer) beg end
-       ;; The same severities as python-lsp-ruff.
+       ;; Ruff's JSON output has no severity.  Pyflakes rules find likely
+       ;; bugs, and most other rules are about style.
        (if (or (null .code)
                (equal .code "invalid-syntax")
                (string-prefix-p "F" .code))
