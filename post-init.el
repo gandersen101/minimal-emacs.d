@@ -1420,9 +1420,9 @@ a load."
 ;; - ghostel sets the terminal size with the PTY, not with stty, so a
 ;;   restored terminal gets the size of its window.
 ;;
-;; The trial keeps the ghostel keys. `C-c C-y' runs `ghostel-paste', not the
-;; zsh `yank' of vterm. `C-q' sends the next key to the terminal, so `C-q C-y'
-;; and `C-q M-y' run the zsh `yank' and `yank-pop'.
+;; The trial keeps the ghostel keys, except `C-g'. `C-c C-y' runs
+;; `ghostel-paste', not the zsh `yank' of vterm. `C-q' sends the next key to
+;; the terminal, so `C-q C-y' and `C-q M-y' run the zsh `yank' and `yank-pop'.
 (use-package ghostel
   :if (bound-and-true-p module-file-suffix)
   :commands (ghostel
@@ -1478,7 +1478,14 @@ easysession binds `default-directory' to the saved directory."
   ;; tmux sends each copy to the outer terminal as OSC 52. Put that text in
   ;; the kill ring, and so in the macOS clipboard. ghostel disables this by
   ;; default because any program in the terminal can then set the clipboard.
-  (setq ghostel-enable-osc52 t))
+  (setq ghostel-enable-osc52 t)
+
+  :config
+  ;; ghostel sends `C-g' to the terminal. Keep `C-g' as the Emacs quit, as in
+  ;; other buffers, and send it to the terminal with `C-q C-g'. The :set
+  ;; function of the option rebuilds the ghostel keymaps.
+  (setopt ghostel-keymap-exceptions
+          (seq-union ghostel-keymap-exceptions '("C-g"))))
 
 ;; Programs print files as paths, often with a line number (`src/foo.py:12'),
 ;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
