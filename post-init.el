@@ -539,7 +539,7 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (setq easysession-setup-load-predicate #'my/easysession-load-p)
 
   ;; The server also runs this hook when it reuses an existing frame for an
-  ;; edit, for example from vterm. The `client' parameter of such a frame is
+  ;; edit, for example from ghostel. The `client' parameter of such a frame is
   ;; not the waiting client, so the frame stays in the session.
   (defun my/easysession-skip-edit-frame ()
     "Exclude the selected frame from the session when it is an edit frame."
@@ -976,7 +976,7 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
 
   :config
   ;; diff-hl updates its marks when Emacs saves, reverts, or commits a file.
-  ;; A commit or reset in a shell, vterm, or Claude Code changes the Git state
+  ;; A commit or reset in a shell, ghostel, or Claude Code changes the Git state
   ;; but not the file, so auto-revert and diff-hl do not see the change.
   ;; Refresh the visible buffers when a frame gets focus, when the selected
   ;; window changes, or when a window shows a different buffer.
@@ -1095,334 +1095,24 @@ In a daemon, open a GUI frame when the restarted daemon is ready."
   (require 'my-python-env)
   (my/python-env-apheleia-setup))
 
-;; `vterm' is an Emacs terminal emulator that provides a fully interactive shell
-;; experience within Emacs, supporting features such as color, cursor movement,
-;; and advanced terminal capabilities. Unlike standard Emacs terminal modes,
-;; `vterm' utilizes the libvterm C library for high-performance emulation. This
-;; ensures accurate terminal behavior when running shell programs, text-based
-;; applications, and REPLs.
-(use-package vterm
-  :if (bound-and-true-p module-file-suffix)
-  :commands (vterm
-             vterm-send-string
-             vterm-send-return
-             vterm-send-key
-             vterm-module-compile)
-
-  :preface
-  (when noninteractive
-    ;; vterm unnecessarily triggers compilation of vterm-module.so upon loading.
-    ;; This prevents that during byte-compilation (`use-package' eagerly loads
-    ;; packages when compiling).
-    (advice-add #'vterm-module-compile :override #'ignore))
-
-  (defun my-vterm--setup ()
-    ;; Hide the mode-line
-    (setq mode-line-format nil)
-
-    ;; Inhibit early horizontal scrolling
-    (setq-local hscroll-margin 0)
-
-    ;; Suppress prompts for terminating active processes when closing vterm
-    (setq-local confirm-kill-processes nil)
-
-    ;; Follow the directory of the foreground program
-    (add-hook 'pre-command-hook #'my/vterm-sync-directory nil t))
-
-  (defun my/vterm--foreground-pid ()
-    "Return the PID of the foreground program in this buffer, or nil.
-When no child program runs, the shell is the foreground program."
-    (when-let* ((proc (get-buffer-process (current-buffer))))
-      (let ((pgrp (process-running-child-p proc)))
-        ;; An integer is the process group of the foreground program. nil
-        ;; means that the shell has the terminal. t means that the system
-        ;; cannot tell.
-        (cond ((integerp pgrp) pgrp)
-              ((null pgrp) (process-id proc))))))
-
-  (defun my/vterm--foreground-command ()
-    "Return the command name of the foreground program in this buffer, or nil."
-    (when-let* ((pid (my/vterm--foreground-pid)))
-      (alist-get 'comm (process-attributes pid))))
-
-  ;; vterm sets `default-directory' only when the shell prints OSC 51;A.
-  ;; ~/.zshrc prints it at the end of each prompt, but not in tmux: there the
-  ;; shell writes to tmux, and tmux does not send that sequence to vterm. A
-  ;; shell also prints the sequence only at a prompt, so a change to another
-  ;; tmux pane or window sends nothing. So before a command runs, ask tmux for
-  ;; the directory of the active pane. For a shell that does not print the
-  ;; sequence, ask lsof for the directory of the foreground program.
-  (defvar-local my/vterm--shell-reports-directory nil
-    "Non-nil when the shell in this buffer prints OSC 51;A.")
-
-  (defun my/vterm--note-shell-directory (&rest _)
-    "Record that the shell in this buffer prints OSC 51;A."
-    (setq my/vterm--shell-reports-directory t))
-
-  (defun my/vterm--program-output (program &rest args)
-    "Run PROGRAM with ARGS and return its output, or nil when it fails."
-    (when-let* ((executable (executable-find program)))
-      (with-temp-buffer
-        ;; `call-process' cannot run in a remote `default-directory'.
-        (let ((default-directory (expand-file-name "~/")))
-          (and (eql 0 (apply #'call-process executable nil '(t nil) nil args))
-               (buffer-string))))))
-
-  (defun my/vterm--existing-directory (dir)
-    "Return DIR as a directory name when DIR is an existing directory."
-    (and dir
-         (file-directory-p dir)
-         (file-name-as-directory dir)))
-
-  (defun my/vterm--tmux-directory ()
-    "Return the directory of the active tmux pane in this buffer, or nil.
-The tmux client in this buffer uses the tty of the vterm process, and
-tmux finds the client by that tty. Only the default tmux server is
-asked."
-    (when-let* ((tty (process-tty-name (get-buffer-process (current-buffer))))
-                (output (my/vterm--program-output
-                         "tmux" "display-message" "-p" "-c" tty
-                         "#{pane_current_path}")))
-      (my/vterm--existing-directory (string-trim-right output))))
-
-  (defun my/vterm--process-directory (pid)
-    "Return the working directory of process PID, or nil."
-    (when-let* ((output (my/vterm--program-output
-                         "lsof" "-a" "-p" (number-to-string pid)
-                         "-d" "cwd" "-Fn")))
-      ;; -Fn prints one field on each line. The name line starts with "n".
-      (and (string-match "^n\\(/.*\\)$" output)
-           (my/vterm--existing-directory (match-string 1 output)))))
-
-  (defun my/vterm--directory ()
-    "Return the directory of the foreground program in this buffer, or nil.
-For tmux, return the directory of the active tmux pane. Without tmux,
-return nil when the shell prints OSC 51;A, because vterm then sets the
-directory."
-    (when-let* ((pid (my/vterm--foreground-pid)))
-      (cond ((equal (alist-get 'comm (process-attributes pid)) "tmux")
-             (my/vterm--tmux-directory))
-            ((not my/vterm--shell-reports-directory)
-             (my/vterm--process-directory pid)))))
-
-  (defun my/vterm-sync-directory ()
-    "Set `default-directory' to the directory of the foreground program.
-Skip vterm commands. They send keys to the terminal, run for each key,
-and do not use the directory. Skip a remote `default-directory': there
-the vterm process is the local ssh process of TRAMP."
-    (unless (or (and (symbolp this-command)
-                     (string-match-p "\\`\\(?:my/\\)?vterm"
-                                     (symbol-name this-command)))
-                (file-remote-p default-directory))
-      (when-let* ((dir (my/vterm--directory)))
-        (setq default-directory dir
-              list-buffers-directory dir))))
-
-  ;; vterm does not report mouse events to the program in the terminal. The
-  ;; wheel only scrolls the Emacs buffer, and a click only moves the Emacs
-  ;; cursor. A program such as tmux draws on the alternate screen, so the
-  ;; buffer has no scrollback and the wheel does nothing. For these programs,
-  ;; send the wheel, clicks, and drags as SGR mouse reports.
-  (defvar my/vterm-mouse-programs '("tmux")
-    "Foreground programs in a vterm buffer that read mouse reports.")
-
-  (defun my/vterm-mouse-program-p ()
-    "Return non-nil when a program that reads mouse reports runs in this buffer."
-    (and (member (my/vterm--foreground-command) my/vterm-mouse-programs)
-         t))
-
-  (defun my/vterm--mouse-col-row (posn window)
-    "Return the (COLUMN . ROW) of POSN in the text area of WINDOW, or nil.
-A position in another window, a fringe, a margin, or the mode line gives nil."
-    (and (eq (posn-window posn) window)
-         (null (posn-area posn))
-         (posn-col-row posn t)))
-
-  (defun my/vterm--send-mouse (code window col-row final)
-    "Send an SGR mouse report to the program in the vterm buffer of WINDOW.
-CODE is the button code. COL-ROW is the 0-based (COLUMN . ROW) in WINDOW.
-FINAL is ?M for a press or a motion, and ?m for a release."
-    ;; Do not use `vterm-send-string'. After it sends the string, it waits up
-    ;; to `vterm-timer-delay' for output from the program. tmux prints nothing
-    ;; for a wheel event at the end of the history or outside copy mode. A
-    ;; trackpad sends many wheel events, so each wait added to a long freeze.
-    (process-send-string
-     (window-buffer window)
-     (format "\e[<%d;%d;%d%c" code
-             (1+ (max 0 (min (car col-row) (1- (window-body-width window)))))
-             (1+ (max 0 (min (cdr col-row) (1- (window-body-height window)))))
-             final)))
-
-  (defun my/vterm--mouse-window (event)
-    "Return the window of EVENT when a mouse-aware program reads the mouse there.
-Return nil when the event is outside the text area of a live window."
-    (let* ((start (event-start event))
-           (window (posn-window start)))
-      (and (window-live-p window)
-           (my/vterm--mouse-col-row start window)
-           (with-current-buffer (window-buffer window)
-             (my/vterm-mouse-program-p))
-           window)))
-
-  (defun my/vterm-wheel (event)
-    "Send the wheel EVENT to a mouse-aware program, or scroll the buffer."
-    (interactive "e")
-    (if-let* ((window (my/vterm--mouse-window event)))
-        ;; SGR buttons 64 and 65 are the wheel up and wheel down.
-        (my/vterm--send-mouse
-         (if (eq (event-basic-type event) 'wheel-up) 64 65)
-         window (my/vterm--mouse-col-row (event-start event) window) ?M)
-      (mwheel-scroll event)))
-
-  (defun my/vterm-mouse-drag (event)
-    "Send a press, drag, and release of button 1 to a mouse-aware program.
-Without such a program, select text as `mouse-drag-region' does."
-    (interactive "e")
-    (if-let* ((window (my/vterm--mouse-window event)))
-        (let ((last (my/vterm--mouse-col-row (event-start event) window))
-              (ev nil))
-          (my/vterm--send-mouse 0 window last ?M)
-          ;; `track-mouse' makes Emacs report the motion while the button is down.
-          (track-mouse
-            (while (mouse-movement-p (setq ev (read-event)))
-              (let ((col-row (my/vterm--mouse-col-row (event-start ev) window)))
-                (when (and col-row (not (equal col-row last)))
-                  (setq last col-row)
-                  ;; SGR button code 32 marks a motion with button 1 down.
-                  (my/vterm--send-mouse 32 window col-row ?M)))))
-          ;; EV ends the drag. It is the release, or an event that is not a
-          ;; mouse event. Give the second kind back to the command loop.
-          (unless (mouse-event-p ev)
-            (push ev unread-command-events))
-          (my/vterm--send-mouse
-           0 window
-           (or (and (mouse-event-p ev)
-                    (my/vterm--mouse-col-row (event-end ev) window))
-               last)
-           ?m))
-      (mouse-drag-region event)))
-
-  ;; easysession saves file, Dired, and indirect buffers, but not vterm buffers.
-  ;; A restart also ends the vterm processes. So a window that showed a vterm
-  ;; buffer did not come back. For a managed major mode, easysession saves the
-  ;; name and directory of each buffer in that mode. A session load then calls
-  ;; a function that makes each buffer again, before it restores the windows.
-  ;; The load skips a name that is a live buffer, so a daemon keeps its shells
-  ;; between frames. Restore only a buffer that a saved window showed. A new
-  ;; shell in a hidden buffer gives nothing that a new `vterm' does not give.
-  (defun my/vterm--save ()
-    "Return the easysession data for the vterm buffer that is current.
-Mark the buffer as shown when a window in a saved frame shows it.
-`easysession-before-save-hook' marks the frames that easysession skips."
-    (when (seq-some (lambda (window)
-                      (not (frame-parameter (window-frame window)
-                                            'easysession-dont-save)))
-                    (get-buffer-window-list nil nil 0))
-      '((shown . t))))
-
-  (defun my/vterm--restorable-p (state)
-    "Return non-nil when easysession should restore the saved vterm STATE.
-A saved window must show the buffer, and its directory must be local and
-exist. A remote directory needs a TRAMP connection, which can prompt during
-a load."
-    (let ((dir (alist-get 'default-directory state)))
-      (and (alist-get 'shown (alist-get 'data state))
-           dir
-           (not (file-remote-p dir))
-           (file-directory-p dir))))
-
-  ;; vterm starts the shell with "stty rows R columns C", and takes R and C from
-  ;; the selected window. During a load, that window does not show the buffer,
-  ;; and the frame can get its saved size after the load. Emacs resizes the
-  ;; terminal when the windows change, but stty can run after that resize and
-  ;; set the old size again. The first output of the shell comes after stty,
-  ;; so resize the terminal again at that output.
-  (defun my/vterm--restore (state)
-    "Start a shell in a new vterm buffer from the saved easysession STATE."
-    (require 'vterm)
-    (with-current-buffer (get-buffer-create (alist-get 'buffer-name state))
-      (setq default-directory (alist-get 'default-directory state))
-      (vterm-mode)
-      (add-function :before (process-filter (get-buffer-process (current-buffer)))
-                    #'my/vterm--resize-after-stty)))
-
-  (defun my/vterm--resize-after-stty (process _output)
-    "Give each terminal the size of its windows at the first output of PROCESS."
-    (remove-function (process-filter process) #'my/vterm--resize-after-stty)
-    ;; `window-configuration-change-hook' runs this function after a change.
-    (window--adjust-process-windows))
-
-  ;; `M-y' runs `vterm-yank-pop' on the Emacs kill ring. This command sends
-  ;; `M-y' to the shell instead, so that zsh `yank-pop' cycles the zsh kill
-  ;; ring after `C-c C-y' (zsh `yank').
-  (defun my/vterm-send-meta-y ()
-    "Send `M-y' to the program in the terminal."
-    (interactive)
-    (vterm-send-key "y" nil t))
-
-  :bind
-  (:map vterm-mode-map
-        ("<wheel-up>" . my/vterm-wheel)
-        ("<wheel-down>" . my/vterm-wheel)
-        ("<double-wheel-up>" . my/vterm-wheel)
-        ("<double-wheel-down>" . my/vterm-wheel)
-        ("<triple-wheel-up>" . my/vterm-wheel)
-        ("<triple-wheel-down>" . my/vterm-wheel)
-        ;; The double and triple press events use this binding too.
-        ("<down-mouse-1>" . my/vterm-mouse-drag)
-        ;; The global `M-y' is `consult-yank-pop'. The vterm remap of
-        ;; `yank-pop' does not apply to that command, and the buffer is
-        ;; read-only.
-        ("M-y" . vterm-yank-pop)
-        ("C-c M-y" . my/vterm-send-meta-y)
-        ;; vterm binds only the plain arrows. Emacs runs an unbound shifted
-        ;; key as the plain key, so without these bindings the terminal gets
-        ;; no Shift, and `lma' cannot move a group with `S-<up>'.
-        ("S-<up>" . vterm--self-insert)
-        ("S-<down>" . vterm--self-insert)
-        ("S-<left>" . vterm--self-insert)
-        ("S-<right>" . vterm--self-insert))
-
-  :init
-  (add-hook 'vterm-mode-hook #'my-vterm--setup)
-
-  (with-eval-after-load 'easysession
-    (easysession-add-managed-major-mode 'vterm-mode
-                                        :save #'my/vterm--save
-                                        :restore #'my/vterm--restore
-                                        :validate #'my/vterm--restorable-p))
-
-  (setq vterm-timer-delay 0.05)  ; Faster vterm
-  (setq vterm-kill-buffer-on-exit t)
-  (setq vterm-max-scrollback 10000)
-
-  ;; tmux sends each copy to the outer terminal as OSC 52. Put that text in
-  ;; the kill ring, and so in the macOS clipboard. vterm disables this by
-  ;; default because any program in the terminal can then set the clipboard.
-  (setq vterm-enable-manipulate-selection-data-by-osc52 t)
-
-  :config
-  ;; vterm calls this function for each OSC 51;A from the shell
-  (advice-add #'vterm--set-directory :after #'my/vterm--note-shell-directory))
-
-;; `ghostel' is a terminal emulator on libghostty-vt, the terminal engine of
-;; Ghostty. It runs beside `vterm' as a trial. A native module does the
-;; terminal work. The first `M-x ghostel' offers to download a prebuilt module
-;; from the GitHub release, or to build one with exactly Zig 0.16.0.
+;; `ghostel' is an Emacs terminal emulator on libghostty-vt, the terminal
+;; engine of Ghostty. A native module does the terminal work. The first
+;; `M-x ghostel' offers to download a prebuilt module from the GitHub release,
+;; or to build one with exactly Zig 0.16.0.
 ;;
-;; Some `vterm' features above need no config here:
+;; These features need no config here:
 ;; - ghostel adds its own zsh integration, which reports the directory with
 ;;   OSC 7. tmux sends OSC 7 for the active pane to an `xterm*' terminal, as
 ;;   ~/.tmux.conf asks, and ghostel sets TERM to xterm-ghostty.
 ;; - ghostel sends mouse reports, the wheel included, to a program that asks
 ;;   for them, such as tmux with `mouse on'.
-;; - ghostel sends the shifted arrows to the terminal.
-;; - ghostel sets the terminal size with the PTY, not with stty, so a
-;;   restored terminal gets the size of its window.
+;; - ghostel sends the shifted arrows to the terminal, so `lma' can move a
+;;   group with `S-<up>'.
+;; - ghostel sets the terminal size with the PTY, so a restored terminal gets
+;;   the size of its window.
 ;;
-;; The trial keeps the ghostel keys, except `C-g'. `C-c C-y' runs
-;; `ghostel-paste', not the zsh `yank' of vterm. `C-q' sends the next key to
-;; the terminal, so `C-q C-y' and `C-q M-y' run the zsh `yank' and `yank-pop'.
+;; Keep the ghostel keys, except `C-g'. `C-q' sends the next key to the
+;; terminal, so `C-q C-y' and `C-q M-y' run the zsh `yank' and `yank-pop'.
 (use-package ghostel
   :if (bound-and-true-p module-file-suffix)
   :commands (ghostel
@@ -1431,13 +1121,21 @@ a load."
   :autoload ghostel-create
 
   :preface
-  ;; easysession saves and restores ghostel terminals as it does vterm
-  ;; terminals (see `my/vterm--save'). ghostel also saves an identity, which
-  ;; `ghostel' and `ghostel-project' use to find a terminal again. Restore
-  ;; only shells: an identity of another kind ran a command, such as a build.
+  ;; easysession saves file, Dired, and indirect buffers, but not ghostel
+  ;; buffers. A restart also ends the shells. So a window that showed a
+  ;; ghostel buffer did not come back. For a managed major mode, easysession
+  ;; saves the name and directory of each buffer in that mode. A session load
+  ;; then calls a function that makes each buffer again, before it restores
+  ;; the windows. The load skips a name that is a live buffer, so a daemon
+  ;; keeps its shells between frames. Restore only a buffer that a saved
+  ;; window showed. A new shell in a hidden buffer gives nothing that a new
+  ;; `ghostel' does not give. ghostel also saves an identity, which `ghostel'
+  ;; and `ghostel-project' use to find a terminal again. Restore only shells:
+  ;; an identity of another kind ran a command, such as a build.
   (defun my/ghostel--save ()
     "Return the easysession data for the ghostel buffer that is current.
-Return nil when no window in a saved frame shows the buffer."
+Return nil when no window in a saved frame shows the buffer.
+`easysession-before-save-hook' marks the frames that easysession skips."
     (when (seq-some (lambda (window)
                       (not (frame-parameter (window-frame window)
                                             'easysession-dont-save)))
@@ -1448,7 +1146,8 @@ Return nil when no window in a saved frame shows the buffer."
   (defun my/ghostel--restorable-p (state)
     "Return non-nil when easysession should restore the saved ghostel STATE.
 A saved window must show the buffer, the buffer must run a shell, and its
-directory must be local and exist."
+directory must be local and exist. A remote directory needs a TRAMP
+connection, which can prompt during a load."
     (let ((data (alist-get 'data state))
           (dir (alist-get 'default-directory state)))
       (and (alist-get 'shown data)
@@ -1471,8 +1170,8 @@ easysession binds `default-directory' to the saved directory."
                                         :restore #'my/ghostel--restore
                                         :validate #'my/ghostel--restorable-p))
 
-  ;; Do not ask before a kill of a ghostel buffer, or before Emacs exits, as
-  ;; in vterm. A tmux session continues without its client.
+  ;; Do not ask before a kill of a ghostel buffer, or before Emacs exits. A
+  ;; tmux session continues without its client.
   (setq ghostel-query-before-killing nil)
 
   ;; tmux sends each copy to the outer terminal as OSC 52. Put that text in
@@ -1490,11 +1189,10 @@ easysession binds `default-directory' to the saved directory."
 ;; Programs print files as paths, often with a line number (`src/foo.py:12'),
 ;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
 ;; These commands open the link at point, or else a link that you pick from
-;; the visible part of the window, in Emacs or in Obsidian. In vterm, point is
-;; at the terminal cursor, so the pick list is the usual way to choose a link.
-;; A relative path resolves against `default-directory', which
-;; `my/vterm-sync-directory' sets to the directory of the active tmux pane.
-;; In ghostel, the OSC 7 from tmux sets it.
+;; the visible part of the window, in Emacs or in Obsidian. In ghostel, point
+;; is at the terminal cursor, so the pick list is the usual way to choose a
+;; link. A relative path resolves against `default-directory'. ghostel sets
+;; it from the OSC 7 of the shell, or of tmux for the active pane.
 (defvar my/obsidian-config-file
   (expand-file-name "~/Library/Application Support/obsidian/obsidian.json")
   "The file where Obsidian lists its vaults.")

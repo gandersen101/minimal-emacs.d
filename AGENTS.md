@@ -47,7 +47,7 @@ environment as the primary target for design, testing, and troubleshooting.
   (`scripts/reopen-emacs-frame`).
 - The owner opens GUI frames with `Emacs Client.app` or `emacsclient -c`.
   `~/.profile` sets `$EDITOR` to `emacsclient -c` in external terminals and
-  to `emacsclient` in Emacs terminals such as vterm. A standalone Emacs starts
+  to `emacsclient` in Emacs terminals such as ghostel. A standalone Emacs starts
   a server only when no daemon or other Emacs runs one.
 - Do not stop or restart the owner's daemon. It holds the owner's buffers. Use
   an isolated daemon for tests (see Validation).
