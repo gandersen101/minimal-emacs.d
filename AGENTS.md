@@ -114,6 +114,9 @@ environment as the primary target for design, testing, and troubleshooting.
   `*Messages*`, and `*Warnings*`, so read them. Then test a standalone
   graphical Emacs started with `--debug-init`. Test an `emacsclient -s NAME -t`
   frame when the change affects terminal frames.
+- Run each test `emacsclient` with `ALTERNATE_EDITOR=false`. The empty
+  `ALTERNATE_EDITOR` in `~/.profile` otherwise starts a daemon with the real
+  configuration when the test daemon is not ready.
 - Batch mode and `emacs -Q` do not exercise normal interactive startup. Use an
   isolated configuration/runtime directory for tests that might install packages,
   restore sessions, or overwrite saved state.
