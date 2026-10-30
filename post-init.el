@@ -1163,6 +1163,16 @@ easysession binds `default-directory' to the saved directory."
                     nil
                     (alist-get 'identity (alist-get 'data state))))
 
+  ;; `ghostel-send-next-key' reads the key with `read-event'. In a GUI frame,
+  ;; a `C-g' then quits before ghostel sends it, so `C-q C-g' only showed
+  ;; "Quit". Read the key with quitting inhibited, as `read-quoted-char' does
+  ;; for `C-q' in other buffers.
+  (defun my/ghostel--send-next-key-without-quit (send-next-key)
+    "Call SEND-NEXT-KEY with quitting inhibited, so that it can read `C-g'."
+    (let ((inhibit-quit t))
+      (funcall send-next-key)
+      (setq quit-flag nil)))
+
   :init
   (with-eval-after-load 'easysession
     (easysession-add-managed-major-mode 'ghostel-mode
@@ -1184,7 +1194,9 @@ easysession binds `default-directory' to the saved directory."
   ;; other buffers, and send it to the terminal with `C-q C-g'. The :set
   ;; function of the option rebuilds the ghostel keymaps.
   (setopt ghostel-keymap-exceptions
-          (seq-union ghostel-keymap-exceptions '("C-g"))))
+          (seq-union ghostel-keymap-exceptions '("C-g")))
+  (advice-add #'ghostel-send-next-key :around
+              #'my/ghostel--send-next-key-without-quit))
 
 ;; Programs print files as paths, often with a line number (`src/foo.py:12'),
 ;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
