@@ -1200,6 +1200,8 @@ easysession binds `default-directory' to the saved directory."
 
 ;; Programs print files as paths, often with a line number (`src/foo.py:12'),
 ;; and lemons print vault docs as `obsidian://open?vault=NAME&file=PATH' URLs.
+;; A shareable URL for a doc that Relay shares has no vault, and its PATH can
+;; end with `#HEADING' or `#^BLOCK-ID'.
 ;; These commands open the link at point, or else a link that you pick from
 ;; the visible part of the window, in Emacs or in Obsidian. In ghostel, point
 ;; is at the terminal cursor, so the pick list is the usual way to choose a
@@ -1222,26 +1224,34 @@ Obsidian names a vault after its folder."
                         dir)))
               (alist-get 'vaults (json-parse-buffer :object-type 'alist))))))
 
-(defun my/obsidian-url-file (url vaults)
-  "Return the existing file that the Obsidian URL opens, or nil.
-VAULTS is an alist of (NAME . DIRECTORY). For a URL without a vault
-parameter, use the first vault that has the file. The file parameter of
-URL can leave out the `.md' extension."
+(defun my/obsidian-url-target (url vaults)
+  "Return (FILE ANCHOR) for the existing file that the Obsidian URL opens.
+Return nil when there is no such file. VAULTS is an alist of (NAME .
+DIRECTORY). For a URL without a vault parameter, use the first vault
+that has the file. The file parameter of URL can leave out the `.md'
+extension. ANCHOR is the heading or `^BLOCK-ID' after the first `#' in
+the file parameter, or nil."
   (let* ((query (url-parse-query-string
                  (substring url (1+ (or (string-search "?" url) -1)))))
          (vault (cadr (assoc "vault" query)))
-         (file (cadr (assoc "file" query))))
-    (when file
-      (seq-some (lambda (dir)
-                  (seq-find #'file-exists-p
-                            (list (expand-file-name file dir)
-                                  (expand-file-name (concat file ".md") dir))))
-                (if vault
-                    (ensure-list (cdr (assoc vault vaults)))
-                  (mapcar #'cdr vaults))))))
+         (target (cadr (assoc "file" query))))
+    (when target
+      (let* ((hash (string-search "#" target))
+             (file (substring target 0 hash)))
+        (when-let* ((found
+                     (seq-some (lambda (dir)
+                                 (seq-find #'file-regular-p
+                                           (list (expand-file-name file dir)
+                                                 (expand-file-name
+                                                  (concat file ".md") dir))))
+                               (if vault
+                                   (ensure-list (cdr (assoc vault vaults)))
+                                 (mapcar #'cdr vaults)))))
+          (list found (and hash (substring target (1+ hash)))))))))
 
-(defun my/obsidian-file-url (file vaults)
+(defun my/obsidian-file-url (file anchor vaults)
   "Return the Obsidian URL that opens FILE, or nil when FILE is in no vault.
+ANCHOR is a heading or `^BLOCK-ID' in FILE, or nil for the top of FILE.
 VAULTS is an alist of (NAME . DIRECTORY)."
   (let ((file (expand-file-name file)))
     (when-let* ((vault (seq-find (lambda (vault)
@@ -1249,8 +1259,24 @@ VAULTS is an alist of (NAME . DIRECTORY)."
                                  vaults)))
       (concat "obsidian://open?vault=" (url-hexify-string (car vault))
               "&file=" (url-hexify-string
-                        (string-remove-suffix
-                         ".md" (file-relative-name file (cdr vault))))))))
+                        (concat (string-remove-suffix
+                                 ".md" (file-relative-name file (cdr vault)))
+                                (and anchor (concat "#" anchor))))))))
+
+(defun my/obsidian-anchor-position (anchor)
+  "Return the start of the line of ANCHOR in the current buffer, or nil.
+ANCHOR is a heading or `^BLOCK-ID'. A heading can name its parent
+headings first, as in `PARENT#CHILD'. Only the last heading counts."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward
+           (if (string-prefix-p "^" anchor)
+               (rx (or bol blank) (literal anchor) (* blank) eol)
+             (rx bol (+ "#") (+ blank)
+                 (literal (car (last (split-string anchor "#"))))
+                 (* blank) eol))
+           nil t)
+      (line-beginning-position))))
 
 (defconst my/file-link-regexp
   (rx (or bol (any space "([{<\"'`|"))
@@ -1258,14 +1284,15 @@ VAULTS is an alist of (NAME . DIRECTORY)."
   "A regexp that matches a word that can be a file link in group 1.")
 
 (defun my/file-link-parse (word vaults)
-  "Return (FILE LINE COL) when WORD names an existing file, or nil.
+  "Return (FILE LINE COL ANCHOR) when WORD names an existing file, or nil.
 WORD is an Obsidian URL, or a path with an optional :LINE or :LINE:COL
-suffix. LINE and COL are nil when WORD has no suffix. VAULTS is an alist
+suffix. LINE and COL are nil when WORD has no suffix. ANCHOR is the
+heading or `^BLOCK-ID' of an Obsidian URL, or nil. VAULTS is an alist
 of (NAME . DIRECTORY)."
   (let ((word (string-trim-right word "[.,;:]+")))
     (if (string-prefix-p "obsidian://" word)
-        (when-let* ((file (my/obsidian-url-file word vaults)))
-          (list file nil nil))
+        (when-let* ((target (my/obsidian-url-target word vaults)))
+          (list (car target) nil nil (cadr target)))
       (when (string-match (rx bos (group (+? anything))
                               (? ":" (group (+ digit))
                                  (? ":" (group (+ digit))))
@@ -1281,13 +1308,15 @@ of (NAME . DIRECTORY)."
                      (file-regular-p (expand-file-name path)))
             (list (expand-file-name path)
                   (and line (string-to-number line))
-                  (and col (string-to-number col)))))))))
+                  (and col (string-to-number col))
+                  nil)))))))
 
 (defun my/file-link--complete (word end vaults)
   "Return (LINK . END) for WORD, which ends at END, or nil.
-LINK is (FILE LINE COL), as `my/file-link-parse' returns. A TUI wraps a
-long link onto the next lines and indents them. While WORD names no file,
-looks like a link, and ends a line, append the first word of the next line."
+LINK is (FILE LINE COL ANCHOR), as `my/file-link-parse' returns. A TUI
+wraps a long link onto the next lines and indents them. While WORD names
+no file, looks like a link, and ends a line, append the first word of the
+next line."
   (save-excursion
     (let ((link (my/file-link-parse word vaults))
           (lines 3))
@@ -1307,8 +1336,8 @@ looks like a link, and ends a line, append the first word of the next line."
 
 (defun my/file-links (start end vaults)
   "Return the links between START and END that name an existing file.
-Return the last link first. Each element is (FILE LINE COL LINK-START
-LINK-END). VAULTS is an alist of (NAME . DIRECTORY)."
+Return the last link first. Each element is (FILE LINE COL ANCHOR
+LINK-START LINK-END). VAULTS is an alist of (NAME . DIRECTORY)."
   (save-excursion
     (goto-char start)
     (let (links)
@@ -1320,68 +1349,117 @@ LINK-END). VAULTS is an alist of (NAME . DIRECTORY)."
             (push (append (car found) (list word-start (cdr found))) links))))
       links)))
 
-(defun my/file-link-label (link)
-  "Return LINK, a list that starts with FILE LINE COL, as FILE:LINE:COL."
-  (pcase-let ((`(,file ,line ,col) link))
-    (concat (abbreviate-file-name file)
+(defun my/file-link-label (link name)
+  "Return a label for LINK, a list that starts with FILE LINE COL ANCHOR.
+The label is NAME, which stands for FILE, then :LINE:COL or #ANCHOR."
+  (pcase-let ((`(,_ ,line ,col ,anchor) link))
+    (concat name
             (and line (format ":%d" line))
-            (and col (format ":%d" col)))))
+            (and col (format ":%d" col))
+            (and anchor (concat "#" anchor)))))
+
+(defun my/file-link-choices (links)
+  "Return the pick list for LINKS as an alist of (LABEL . LINK).
+Each file comes first, with its path as the label, also when no link in
+LINKS opens the whole file. The links to a line or an anchor in the file
+follow it. Their label starts with the file name in the `shadow' face,
+or with the path when another file with that name has the same label.
+The files keep the order of their first link in LINKS, and the links
+keep their order in LINKS."
+  (let (choices)
+    (dolist (file (seq-uniq (mapcar #'car links)))
+      (push (cons (abbreviate-file-name file) (list file nil nil nil)) choices)
+      (pcase-dolist ((and link `(,link-file ,line ,_ ,anchor)) links)
+        (when (and (equal link-file file) (or line anchor))
+          (let* ((short (my/file-link-label
+                         link (propertize (file-name-nondirectory file)
+                                          'face 'shadow)))
+                 (taken (cdr (assoc short choices)))
+                 (label (if (and taken (not (equal (car taken) file)))
+                            (my/file-link-label link (abbreviate-file-name file))
+                          short)))
+            (unless (assoc label choices)
+              (push (cons label link) choices))))))
+    (nreverse choices)))
+
+(defun my/file-link-affixation (choices)
+  "Return an affixation function that indents the links in a file.
+CHOICES is the alist of (LABEL . LINK) that `my/file-link-choices'
+returns. The function indents the label of a link to a line or an
+anchor, so that it shows below its file."
+  (lambda (labels)
+    (mapcar (lambda (label)
+              (pcase-let ((`(,_ ,line ,_ ,anchor) (cdr (assoc label choices))))
+                (list label (if (or line anchor) "  " "") "")))
+            labels)))
 
 (defun my/file-link-read (vaults)
   "Return the link at point, or else a link picked from the window.
-The pick list holds the links in the visible part of the selected window.
-A link is (FILE LINE COL LINK-START LINK-END). VAULTS is an alist of
-\(NAME . DIRECTORY)."
+The pick list holds the links in the visible part of the selected window,
+grouped by file, as `my/file-link-choices' says. A link is (FILE LINE
+COL ANCHOR LINK-START LINK-END). VAULTS is an alist of (NAME .
+DIRECTORY)."
   (let* ((links (my/file-links (window-start) (window-end nil t) vaults))
-         (at-point (seq-find (pcase-lambda (`(,_ ,_ ,_ ,start ,end))
+         (at-point (seq-find (pcase-lambda (`(,_ ,_ ,_ ,_ ,start ,end))
                                (<= start (point) end))
                              links)))
     (cond
      (at-point at-point)
      (links
-      (let* ((labeled (seq-uniq (mapcar (lambda (link)
-                                          (cons (my/file-link-label link) link))
-                                        links)
-                                (lambda (a b) (equal (car a) (car b)))))
-             (labels (mapcar #'car labeled)))
+      (let* ((choices (my/file-link-choices links))
+             (labels (mapcar #'car choices)))
         (cdr (assoc (completing-read
                      "Open link: "
                      (lambda (string pred action)
-                       ;; Keep the buffer order, last link first
+                       ;; Keep the order of the choices, last link first
                        (if (eq action 'metadata)
-                           '(metadata (display-sort-function . identity))
+                           `(metadata
+                             (display-sort-function . identity)
+                             (affixation-function
+                              . ,(my/file-link-affixation choices)))
                          (complete-with-action action labels string pred)))
                      nil t)
-                    labeled))))
+                    choices))))
      (t (user-error "No links to existing files in this window")))))
 
 (defun my/file-link-open-in-emacs (link)
-  "Visit the file of LINK, and go to its line and column.
-LINK is (FILE LINE COL ...), the link at point or a link picked from the
-window."
+  "Visit the file of LINK, and go to its line and column, or its anchor.
+LINK is (FILE LINE COL ANCHOR ...), the link at point or a link picked
+from the window."
   (interactive
    (list (my/file-link-read (my/obsidian-vaults my/obsidian-config-file))))
-  (pcase-let ((`(,file ,line ,col) link))
+  (pcase-let ((`(,file ,line ,col ,anchor) link))
     (find-file file)
     (when line
       (goto-char (point-min))
       (forward-line (1- line))
       (when col
-        (move-to-column (max 0 (1- col)))))))
+        (move-to-column (max 0 (1- col)))))
+    (when anchor
+      (if-let* ((position (my/obsidian-anchor-position anchor)))
+          (progn
+            (goto-char position)
+            ;; Show the heading or block at the top, as Obsidian does
+            (recenter 0))
+        (message "Cannot find #%s in %s" anchor
+                 (abbreviate-file-name file))))))
 
 (defun my/file-link-open-in-obsidian (link vaults)
   "Open the file of LINK in Obsidian with the macOS `open' command.
-LINK is (FILE ...), the link at point or a link picked from the window.
-VAULTS is an alist of (NAME . DIRECTORY)."
+LINK is (FILE LINE COL ANCHOR ...), the link at point or a link picked
+from the window. Obsidian opens FILE at ANCHOR. The URL names the vault
+of FILE, because Obsidian opens a URL without a vault in the vault
+window that had focus last. VAULTS is an alist of (NAME . DIRECTORY)."
   (interactive
    (let ((vaults (my/obsidian-vaults my/obsidian-config-file)))
      (list (my/file-link-read vaults) vaults)))
-  (call-process (or (executable-find "open")
-                    (user-error "Cannot find the open command"))
-                nil 0 nil
-                (or (my/obsidian-file-url (car link) vaults)
-                    (user-error "%s is not in an Obsidian vault"
-                                (abbreviate-file-name (car link))))))
+  (pcase-let ((`(,file ,_ ,_ ,anchor) link))
+    (call-process (or (executable-find "open")
+                      (user-error "Cannot find the open command"))
+                  nil 0 nil
+                  (or (my/obsidian-file-url file anchor vaults)
+                      (user-error "%s is not in an Obsidian vault"
+                                  (abbreviate-file-name file))))))
 
 (global-set-key (kbd "C-c o e") #'my/file-link-open-in-emacs)
 (global-set-key (kbd "C-c o o") #'my/file-link-open-in-obsidian)
