@@ -1278,9 +1278,11 @@ headings first, as in `PARENT#CHILD'. Only the last heading counts."
            nil t)
       (line-beginning-position))))
 
+;; tmux draws `│' between side-by-side panes, for example between `lma' and a
+;; lemon, so a word also ends at `│'.
 (defconst my/file-link-regexp
-  (rx (or bol (any space "([{<\"'`|"))
-      (group (+ (not (any space "()[]{}<>\"'`|,;")))))
+  (rx (or bol (any space "([{<\"'`|│"))
+      (group (+ (not (any space "()[]{}<>\"'`|│,;")))))
   "A regexp that matches a word that can be a file link in group 1.")
 
 (defun my/file-link-parse (word vaults)
@@ -1311,23 +1313,47 @@ of (NAME . DIRECTORY)."
                   (and col (string-to-number col))
                   nil)))))))
 
+(defun my/file-link--goto-pane-start (column)
+  "Go to the start of the tmux pane at COLUMN on the current line.
+The pane starts after the `│' border closest to COLUMN. It starts at the
+beginning of the line when COLUMN is 0 or the line has no border. The
+closest border, not the border at COLUMN, allows for wide characters such
+as emoji, which can move a border by a column or two."
+  (let ((eol (line-end-position))
+        best best-distance)
+    (beginning-of-line)
+    (when (> column 0)
+      (save-excursion
+        (while (search-forward "│" eol t)
+          (let ((distance (abs (- (current-column) column))))
+            (when (or (not best) (< distance best-distance))
+              (setq best (point)
+                    best-distance distance))))))
+    (when best
+      (goto-char best))))
+
 (defun my/file-link--complete (word end vaults)
   "Return (LINK . END) for WORD, which ends at END, or nil.
 LINK is (FILE LINE COL ANCHOR), as `my/file-link-parse' returns. A TUI
 wraps a long link onto the next lines and indents them. While WORD names
-no file, looks like a link, and ends a line, append the first word of the
-next line."
+no file, looks like a link, and ends a line or a tmux pane, append the
+first word of the same pane on the next line."
   (save-excursion
     (let ((link (my/file-link-parse word vaults))
+          (pane-column (progn (goto-char (- end (length word)))
+                              (if (search-backward "│" (line-beginning-position) t)
+                                  (1+ (current-column))
+                                0)))
           (lines 3))
       (while (and (not link)
                   (string-match-p "\\`obsidian://\\|/" word)
                   (> lines 0)
                   (progn (goto-char end)
                          (skip-chars-forward " \t")
-                         (eolp))
+                         (or (eolp) (eq (char-after) ?│)))
                   (zerop (forward-line 1))
-                  (looking-at "[ \t]*\\([^ \t\n()\"'`<>|]+\\)"))
+                  (progn (my/file-link--goto-pane-start pane-column)
+                         (looking-at "[ \t]*\\([^ \t\n()\"'`<>|│]+\\)")))
         (setq word (concat word (match-string-no-properties 1))
               end (match-end 1)
               link (my/file-link-parse word vaults)
