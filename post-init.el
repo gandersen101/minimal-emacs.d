@@ -1461,5 +1461,13 @@ window that had focus last. VAULTS is an alist of (NAME . DIRECTORY)."
                       (user-error "%s is not in an Obsidian vault"
                                   (abbreviate-file-name file))))))
 
+(defun my/file-link-open-in-browser (link)
+  "Open the file of LINK in the web browser, for example an HTML report.
+LINK is (FILE ...), the link at point or a link picked from the window."
+  (interactive
+   (list (my/file-link-read (my/obsidian-vaults my/obsidian-config-file))))
+  (browse-url-of-file (car link)))
+
+(global-set-key (kbd "C-c o b") #'my/file-link-open-in-browser)
 (global-set-key (kbd "C-c o e") #'my/file-link-open-in-emacs)
 (global-set-key (kbd "C-c o o") #'my/file-link-open-in-obsidian)
